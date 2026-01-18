@@ -218,7 +218,7 @@ class DuetPrinter():
             **kwargs,
         )
 
-        if (depth == 1 or not self.sbc) and isinstance(response['result'], dict):
+        if (depth == 1 or not self.sbc) and isinstance(response['result'], dict) and key != "global":
             for k, v in response['result'].items():
                 sub_key = f"{key}.{k}" if key else k
                 sub_depth = depth + 1 if isinstance(v, dict) else 99
