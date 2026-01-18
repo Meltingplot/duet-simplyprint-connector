@@ -4,6 +4,7 @@
 
 import asyncio
 import datetime
+import functools
 import logging
 from typing import AsyncIterable, BinaryIO, Callable, Optional
 from zlib import crc32
@@ -13,37 +14,42 @@ import aiohttp
 import attr
 
 
-def reauthenticate(retries=3):
-    """Reauthenticate HTTP API requests."""
+def reauthenticate(retries: int = 3):
+    """Reauthenticate HTTP API requests.
+
+    Decorator that wraps async API methods with retry logic for handling
+    connection errors and authentication failures. Uses linear backoff
+    capped at RETRY_DELAY_MAX seconds.
+    """
 
     def decorator(f):
-
-        async def inner(*args, **kwargs):
-            status = {'retries': retries}
-            while status['retries']:
+        @functools.wraps(f)
+        async def inner(self, *args, **kwargs):
+            remaining = retries
+            while remaining > 0:
                 try:
-                    return await f(*args, **kwargs)
+                    return await f(self, *args, **kwargs)
                 except (TimeoutError, aiohttp.ClientPayloadError, aiohttp.ClientConnectionError) as e:
-                    args[0].logger.error(f"{e} - retry")
-                    status['retries'] -= 1
-                    await asyncio.sleep(5**(retries - status['retries']))
+                    self.logger.error(f"{e} - retry")
+                    remaining -= 1
+                    delay = min(2 * (retries - remaining + 1), self.RETRY_DELAY_MAX)
+                    await asyncio.sleep(delay)
                 except aiohttp.ClientResponseError as e:
-                    status['retries'] -= 1
-                    if e.status in args[0].callbacks:
-                        await args[0].callbacks[e.status](e)
+                    remaining -= 1
+                    if e.status in self.callbacks:
+                        await self.callbacks[e.status](e)
                     elif e.status == 401:
-                        args[0].logger.error(
-                            'Unauthorized  while requesting {!s} - retry'.format(e.request_info),
+                        self.logger.error(
+                            f'Unauthorized while requesting {e.request_info!s} - retry',
                         )
-                        await asyncio.sleep(5**(retries - status['retries']))
-                        response = await args[0].reconnect()
+                        delay = min(2 * (retries - remaining + 1), self.RETRY_DELAY_MAX)
+                        await asyncio.sleep(delay)
+                        response = await self.reconnect()
                         if response['err'] == 0:
-                            status['retries'] = retries
+                            remaining = retries
                     else:
                         raise e
-            raise TimeoutError(
-                'Retried {} times to reauthenticate.'.format(retries),
-            )
+            raise TimeoutError(f'Retried {retries} times to reauthenticate.')
 
         return inner
 
@@ -54,11 +60,20 @@ def reauthenticate(retries=3):
 class RepRapFirmware():
     """RepRapFirmware API Class."""
 
+    # Class constants
+    DEFAULT_SESSION_TIMEOUT = 8000
+    DEFAULT_HTTP_TIMEOUT = 15
+    DEFAULT_HTTP_RETRIES = 3
+    RETRY_DELAY_MAX = 10
+    REPLY_CACHE_TTL = 10
+    UPLOAD_TIMEOUT = 60 * 30  # 30 minutes
+    UPLOAD_CHUNK_SIZE = 8192
+
     address = attr.ib(type=str, default="http://10.42.0.2")
     password = attr.ib(type=str, default="meltingplot")
-    session_timeout = attr.ib(type=int, default=8000)
-    http_timeout = attr.ib(type=int, default=15)
-    http_retries = attr.ib(type=int, default=3)
+    session_timeout = attr.ib(type=int, default=DEFAULT_SESSION_TIMEOUT)
+    http_timeout = attr.ib(type=int, default=DEFAULT_HTTP_TIMEOUT)
+    http_retries = attr.ib(type=int, default=DEFAULT_HTTP_RETRIES)
     session = attr.ib(type=aiohttp.ClientSession, default=None)
     logger = attr.ib(type=logging.Logger, factory=logging.getLogger)
     callbacks = attr.ib(type=dict, factory=dict)
@@ -73,15 +88,15 @@ class RepRapFirmware():
 
     async def _default_http_502_bad_gateway_callback(self, e):
         # a reverse proxy may return HTTP status code 502 if the Duet is not available
-        # duet to open socket limit. In this case, we retry the request.
-        self.logger.error('Duet bad gateway  {!s} - retry'.format(e.request_info))
+        # due to open socket limit. In this case, we retry the request.
+        self.logger.error(f'Duet bad gateway {e.request_info!s} - retry')
         await asyncio.sleep(5)
 
     async def _default_http_503_busy_callback(self, e):
         # Besides, RepRapFirmware may run short on memory and
         # may not be able to respond properly. In this case,
         # HTTP status code 503 is returned.
-        self.logger.error('Duet busy  {!s} - retry'.format(e.request_info))
+        self.logger.error(f'Duet busy {e.request_info!s} - retry')
         await asyncio.sleep(5)
 
     @address.validator
@@ -102,7 +117,7 @@ class RepRapFirmware():
                 return {'err': 0}
 
         async with self._reconnect_lock:
-            url = '{0}/rr_connect'.format(self.address)
+            url = f'{self.address}/rr_connect'
 
             params = {
                 'password': self.password,
@@ -124,9 +139,7 @@ class RepRapFirmware():
             try:
                 if json_response['err'] == 0:
                     if 'sessionKey' in json_response:
-                        self.session.headers['X-Session-Key'] = '{!s}'.format(
-                            json_response['sessionKey'],
-                        )
+                        self.session.headers['X-Session-Key'] = str(json_response['sessionKey'])
                     if 'sessionTimeout' in json_response:
                         self.session_timeout = json_response['sessionTimeout']
             except KeyError as e:
@@ -144,7 +157,7 @@ class RepRapFirmware():
         """Disconnect from the Duet."""
         await self._ensure_session()
 
-        url = '{0}/rr_disconnect'.format(self.address)
+        url = f'{self.address}/rr_disconnect'
 
         response = {}
         async with self.session.get(url) as r:
@@ -213,7 +226,7 @@ class RepRapFirmware():
         """rr_gcode Send GCode to Duet."""
         await self._ensure_session()
 
-        url = '{0}/rr_gcode'.format(self.address)
+        url = f'{self.address}/rr_gcode'
 
         params = {
             'gcode': gcode,
@@ -229,20 +242,30 @@ class RepRapFirmware():
 
     @reauthenticate()
     async def rr_reply(self, nocache: bool = False) -> str:
-        """rr_reply Get Reply from Duet."""
+        """rr_reply Get Reply from Duet.
+
+        Returns the cached reply if caching is enabled, response is empty,
+        and the cache hasn't expired. Otherwise fetches and caches new response.
+        """
         await self._ensure_session()
 
-        url = '{0}/rr_reply'.format(self.address)
+        url = f'{self.address}/rr_reply'
 
         response = ''
         async with self.session.get(url) as r:
             response = await r.text()
 
-        if nocache is False and response == '' and datetime.datetime.now() < self._last_reply_timeout:
+        now = datetime.datetime.now()
+
+        # Return cached reply if: caching enabled, empty response, cache still valid
+        if not nocache and response == '' and now < self._last_reply_timeout:
             return self._last_reply
-        if nocache is False or response != '':  # Only cache if there is a new response
+
+        # Update cache with new response (only if caching enabled or response non-empty)
+        if not nocache or response != '':
             self._last_reply = response
-        self._last_reply_timeout = datetime.datetime.now() + datetime.timedelta(seconds=10)
+            self._last_reply_timeout = now + datetime.timedelta(seconds=self.REPLY_CACHE_TTL)
+
         return response
 
     async def rr_download(
@@ -253,7 +276,7 @@ class RepRapFirmware():
         """rr_download Download File from Duet."""
         await self._ensure_session()
 
-        url = '{0}/rr_download'.format(self.address)
+        url = f'{self.address}/rr_download'
 
         params = {
             'name': filepath,
@@ -273,7 +296,7 @@ class RepRapFirmware():
         """rr_upload Upload File to Duet."""
         await self._ensure_session()
 
-        url = '{0}/rr_upload'.format(self.address)
+        url = f'{self.address}/rr_upload'
 
         params = {
             'name': filepath,
@@ -288,7 +311,7 @@ class RepRapFirmware():
             content = content.encode('utf-8')
             checksum = crc32(content) & 0xffffffff
 
-        params['crc32'] = '{0:08x}'.format(checksum)
+        params['crc32'] = f'{checksum:08x}'
 
         headers = {
             'Content-Length': str(len(content)),
@@ -309,7 +332,7 @@ class RepRapFirmware():
         """rr_upload_stream Upload File to Duet."""
         await self._ensure_session()
 
-        url = '{0}/rr_upload'.format(self.address)
+        url = f'{self.address}/rr_upload'
 
         params = {
             'name': filepath,
@@ -318,20 +341,18 @@ class RepRapFirmware():
         if last_modified is not None:
             params['time'] = last_modified.isoformat(timespec='seconds')
 
+        # Calculate CRC32 checksum by reading entire file
         checksum = 0
-        while chunk := file.read(8096):
+        while chunk := file.read(self.UPLOAD_CHUNK_SIZE):
             checksum = crc32(chunk, checksum) & 0xffffffff
-            if progress:
-                progress(0.0)
 
-        checksum = checksum & 0xffffffff
         filesize = file.tell()
         file.seek(0)
 
-        params['crc32'] = '{0:08x}'.format(checksum)
+        params['crc32'] = f'{checksum:08x}'
 
         async def file_chunk():
-            while chunk := file.read(8096):
+            while chunk := file.read(self.UPLOAD_CHUNK_SIZE):
                 if progress:
                     progress(
                         max(0.0, min(100.0,
@@ -342,7 +363,7 @@ class RepRapFirmware():
                 yield chunk
 
         timeout = aiohttp.ClientTimeout(
-            total=60 * 30,  # 30 minutes
+            total=self.UPLOAD_TIMEOUT,
         )
 
         headers = {
@@ -377,7 +398,7 @@ class RepRapFirmware():
         """
         await self._ensure_session()
 
-        url = '{0}/rr_filelist'.format(self.address)
+        url = f'{self.address}/rr_filelist'
 
         params = {
             'dir': directory,
@@ -405,7 +426,7 @@ class RepRapFirmware():
         """
         await self._ensure_session()
 
-        url = '{0}/rr_fileinfo'.format(self.address)
+        url = f'{self.address}/rr_fileinfo'
 
         params = {}
 
@@ -431,7 +452,7 @@ class RepRapFirmware():
         """
         await self._ensure_session()
 
-        url = '{0}/rr_mkdir'.format(self.address)
+        url = f'{self.address}/rr_mkdir'
 
         params = {
             'dir': directory,
@@ -465,7 +486,7 @@ class RepRapFirmware():
         """
         await self._ensure_session()
 
-        url = '{0}/rr_move'.format(self.address)
+        url = f'{self.address}/rr_move'
 
         params = {
             'old': old_filepath,
@@ -492,7 +513,7 @@ class RepRapFirmware():
         """
         await self._ensure_session()
 
-        url = '{0}/rr_delete'.format(self.address)
+        url = f'{self.address}/rr_delete'
 
         params = {
             'name': filepath,
