@@ -5,6 +5,7 @@ import csv
 import io
 import logging
 from enum import auto
+from typing import Union
 
 import aiohttp
 
@@ -15,6 +16,7 @@ from pyee.asyncio import AsyncIOEventEmitter
 from strenum import CamelCaseStrEnum, StrEnum
 
 from .api import RepRapFirmware
+from .dsf import DuetSoftwareFramework
 
 
 def merge_dictionary(source, destination):
@@ -77,7 +79,7 @@ class DuetState(CamelCaseStrEnum):
 class DuetPrinter():
     """Duet Printer model class."""
 
-    api = field(type=RepRapFirmware, factory=RepRapFirmware)
+    api: Union[RepRapFirmware, DuetSoftwareFramework] = field(factory=RepRapFirmware)
     om = field(type=dict, default=None)
     seqs = field(type=dict, factory=dict)
     logger = field(type=logging.Logger, factory=logging.getLogger)
@@ -113,8 +115,18 @@ class DuetPrinter():
         result = await self.api.connect()
         if 'isEmulated' in result:
             self.sbc = True
+            # Switch to DSF API, reusing connection parameters
+            dsf_api = DuetSoftwareFramework(
+                address=self.api.address,
+                password=self.api.password,
+                session=self.api.session,
+                logger=self.api.logger,
+            )
+            self.api.session = None  # Prevent session close
+            self.api = dsf_api
+            self.api.callbacks[503] = self._http_503_callback
         result = await self._fetch_full_status()
-        self.om = result['result']
+        self.om = result['result'] if 'result' in result else result
         self.events.emit(DuetModelEvents.connect)
 
     async def close(self) -> None:
@@ -132,10 +144,12 @@ class DuetPrinter():
         """Send a GCode command to the printer."""
         self.logger.debug(f"Sending GCode: {command}")
         self._wait_for_reply.clear()
-        await self.api.rr_gcode(
-            gcode=command,
-            no_reply=True,
-        )
+        result = await self._api_send_gcode(command, no_reply)
+        if self.sbc:
+            if not no_reply:
+                self._reply = result
+                self._wait_for_reply.set()
+            return result
         if no_reply:
             return ''
         return await self.reply()
@@ -145,7 +159,7 @@ class DuetPrinter():
         compensation = self.om['move']['compensation']
         heightmap = io.BytesIO()
 
-        async for chunk in self.api.rr_download(filepath=compensation['file']):
+        async for chunk in self._api_download(filepath=compensation['file']):
             heightmap.write(chunk)
 
         heightmap.seek(0)
@@ -180,6 +194,23 @@ class DuetPrinter():
         await self._wait_for_reply.wait()
         return self._reply
 
+    async def _api_send_gcode(self, command: str, no_reply: bool = True) -> str:
+        """Send G-code command, abstracting API differences."""
+        if self.sbc:
+            return await self.api.code(command, async_exec=no_reply)
+        else:
+            await self.api.rr_gcode(gcode=command, no_reply=True)
+            return '' if no_reply else await self.api.rr_reply()
+
+    async def _api_download(self, filepath: str, chunk_size: int = 1024):
+        """Download file, abstracting API differences."""
+        if self.sbc:
+            async for chunk in self.api.download(filename=filepath, chunk_size=chunk_size):
+                yield chunk
+        else:
+            async for chunk in self.api.rr_download(filepath=filepath, chunk_size=chunk_size):
+                yield chunk
+
     async def _fetch_objectmodel_recursive(
         self,
         *args,
@@ -201,11 +232,16 @@ class DuetPrinter():
         this helps to reduce the load on the duet board.
 
         Duet3 or SBC mode (isEmulated):
-        The implementation is not recursive and fetches the object model in a single request
-        starting from the second level of the object model (d=2).
+        For DSF API, fetches the full model in a single request.
         """
-        if self.sbc and depth == 2:
-            depth = 99
+        if self.sbc:
+            # DSF: Fetch full model, extract key if needed
+            result = await self.api.model()
+            if key and key != "global":
+                for part in key.split('.'):
+                    if part:
+                        result = result.get(part, {})
+            return {'result': result, 'next': 0}
 
         response = await self.api.rr_model(
             *args,
@@ -218,7 +254,7 @@ class DuetPrinter():
             **kwargs,
         )
 
-        if (depth == 1 or not self.sbc) and isinstance(response['result'], dict) and key != "global":
+        if depth == 1 and isinstance(response['result'], dict) and key != "global":
             for k, v in response['result'].items():
                 sub_key = f"{key}.{k}" if key else k
                 sub_depth = depth + 1 if isinstance(v, dict) else 99
@@ -265,7 +301,8 @@ class DuetPrinter():
     async def _handle_om_changes(self, changes: dict) -> None:
         """Handle object model changes."""
         if 'reply' in changes:
-            self._reply = await self.api.rr_reply()
+            if not self.sbc:
+                self._reply = await self.api.rr_reply()
             self._wait_for_reply.set()
             self.logger.debug(f"Reply: {self._reply}")
             changes.pop('reply')
@@ -304,25 +341,33 @@ class DuetPrinter():
 
     async def _update_object_model(self) -> None:
         """Update the object model by fetching partial updates."""
-        result = await self.api.rr_model(
-            key='',
-            depth=99,
-            frequently=True,
-            include_null=True,
-            verbose=True,
-        )
-        if result is None or 'result' not in result:
-            return
-        changes = self._detect_om_changes(result['result']['seqs'])
+        if self.sbc:
+            result = await self.api.model()
+            if result is None:
+                return
+            changes = self._detect_om_changes(result.get('seqs', {}))
+        else:
+            response = await self.api.rr_model(
+                key='',
+                depth=99,
+                frequently=True,
+                include_null=True,
+                verbose=True,
+            )
+            if response is None or 'result' not in response:
+                return
+            result = response['result']
+            changes = self._detect_om_changes(result['seqs'])
+
         old_om = dict(self.om)
         try:
-            self.om = merge_dictionary(self.om, result['result'])
+            self.om = merge_dictionary(self.om, result)
             if changes:
                 await self._handle_om_changes(changes)
             self.events.emit(DuetModelEvents.objectmodel, old_om)
         except (TypeError, KeyError, ValueError):
             self.logger.exception("Failed to update object model - fetch full model")
-            self.logger.debug(f"Old OM: {old_om} result {result['result']}")
+            self.logger.debug(f"Old OM: {old_om} result {result}")
             self.om = None
             # TODO: send to sentry
 
