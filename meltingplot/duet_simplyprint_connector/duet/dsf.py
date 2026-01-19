@@ -4,8 +4,9 @@
 
 import asyncio
 import functools
+import json
 import logging
-from typing import AsyncIterable, BinaryIO, Callable, Optional
+from typing import AsyncIterable, AsyncIterator, BinaryIO, Callable, Optional
 from urllib.parse import quote
 
 import aiohttp
@@ -85,6 +86,8 @@ class DuetSoftwareFramework():
     logger = attr.ib(type=logging.Logger, factory=logging.getLogger)
     callbacks = attr.ib(type=dict, factory=dict)
     _reconnect_lock = attr.ib(type=asyncio.Lock, factory=asyncio.Lock)
+    _ws = attr.ib(type=Optional[aiohttp.ClientWebSocketResponse], default=None)
+    _ws_connected = attr.ib(type=bool, default=False)
 
     def __attrs_post_init__(self):
         """Post init."""
@@ -167,6 +170,86 @@ class DuetSoftwareFramework():
         """Ensure a valid session."""
         if self.session is None or self.session.closed:
             await self.reconnect()
+
+    def _build_ws_url(self) -> str:
+        """Build WebSocket URL with session key."""
+        ws_url = self.address.replace('http://', 'ws://').replace('https://', 'wss://')
+        ws_url = f'{ws_url}/machine'
+
+        session_key = self.session.headers.get('X-Session-Key', '')
+        if session_key:
+            ws_url = f'{ws_url}?sessionKey={session_key}'
+        return ws_url
+
+    async def _handle_ws_text_message(self, msg) -> Optional[dict]:
+        """Handle a TEXT WebSocket message, returns parsed data or None."""
+        if msg.data == 'PONG\n':
+            return None  # Ignore PONG responses
+
+        try:
+            data = json.loads(msg.data)
+            await self._ws.send_str('OK\n')
+            return data
+        except json.JSONDecodeError:
+            self.logger.warning(f"Invalid JSON from WebSocket: {msg.data[:100]}")
+            return None
+
+    async def subscribe(self) -> AsyncIterator[dict]:
+        """Subscribe to object model updates via WebSocket.
+
+        Yields object model updates (first full model, then patches).
+        Handles PING/PONG keepalive internally.
+        """
+        await self._ensure_session()
+        ws_url = self._build_ws_url()
+
+        try:
+            self._ws = await self.session.ws_connect(ws_url, heartbeat=30.0)
+            self._ws_connected = True
+            self.logger.info(f"WebSocket connected to {ws_url}")
+
+            async for msg in self._ws:
+                if msg.type == aiohttp.WSMsgType.TEXT:
+                    data = await self._handle_ws_text_message(msg)
+                    if data is not None:
+                        yield data
+                elif msg.type == aiohttp.WSMsgType.ERROR:
+                    self.logger.error(f"WebSocket error: {self._ws.exception()}")
+                    break
+                elif msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED):
+                    self.logger.info("WebSocket closed by server")
+                    break
+
+        except aiohttp.ClientError as e:
+            self.logger.error(f"WebSocket connection error: {e}")
+            raise
+        finally:
+            self._ws_connected = False
+            if self._ws and not self._ws.closed:
+                await self._ws.close()
+            self._ws = None
+
+    async def send_ping(self) -> bool:
+        """Send PING to WebSocket, returns True if connected."""
+        if self._ws and not self._ws.closed:
+            try:
+                await self._ws.send_str('PING\n')
+                return True
+            except Exception:
+                return False
+        return False
+
+    async def unsubscribe(self) -> None:
+        """Close WebSocket subscription."""
+        if self._ws and not self._ws.closed:
+            await self._ws.close()
+        self._ws = None
+        self._ws_connected = False
+
+    @property
+    def ws_connected(self) -> bool:
+        """Check if WebSocket is connected."""
+        return self._ws_connected and self._ws is not None and not self._ws.closed
 
     @reauthenticate_dsf()
     async def noop(self) -> None:

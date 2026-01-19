@@ -5,7 +5,7 @@ import csv
 import io
 import logging
 from enum import auto
-from typing import Union
+from typing import Optional, Union
 
 import aiohttp
 
@@ -87,6 +87,8 @@ class DuetPrinter():
     sbc = field(type=bool, default=False)
     _reply = field(type=str, default=None)
     _wait_for_reply = field(type=asyncio.Event, factory=asyncio.Event)
+    _ws_task = field(type=Optional[asyncio.Task], default=None)
+    _ws_enabled = field(type=bool, default=True)
 
     def __attrs_post_init__(self) -> None:
         """Post init."""
@@ -131,6 +133,7 @@ class DuetPrinter():
 
     async def close(self) -> None:
         """Close the printer."""
+        await self._stop_websocket_subscription()
         await self.api.close()
         self.events.emit(DuetModelEvents.close)
 
@@ -328,6 +331,19 @@ class DuetPrinter():
 
         if self.om is None:
             await self._initialize_object_model()
+            # Start WebSocket after initial model fetch
+            if self.sbc and self._ws_enabled:
+                await self._start_websocket_subscription()
+        elif self.sbc and self._ws_enabled:
+            # In SBC mode with WebSocket, check if task is running
+            if self._ws_task is None or self._ws_task.done():
+                # WebSocket died, restart or fallback to polling
+                if hasattr(self.api, 'ws_connected') and self.api.ws_connected:
+                    await self._start_websocket_subscription()
+                else:
+                    # Fallback to polling
+                    await self._update_object_model()
+            # else: WebSocket is handling updates, nothing to do
         else:
             await self._update_object_model()
 
@@ -393,3 +409,56 @@ class DuetPrinter():
                 break
             self._reply = reply
         self._wait_for_reply.set()
+
+    async def _start_websocket_subscription(self) -> None:
+        """Start WebSocket subscription for object model updates."""
+        if not self.sbc or not self._ws_enabled:
+            return
+
+        if self._ws_task is not None and not self._ws_task.done():
+            return  # Already running
+
+        self._ws_task = asyncio.create_task(self._websocket_loop())
+
+    async def _websocket_loop(self) -> None:
+        """Process WebSocket messages to receive and handle object model updates."""
+        first_message = True
+        try:
+            async for data in self.api.subscribe():
+                if first_message:
+                    # First message is full object model
+                    self.om = data
+                    self.seqs = data.get('seqs', {})
+                    self.events.emit(DuetModelEvents.objectmodel, None)
+                    first_message = False
+                else:
+                    # Subsequent messages are patches
+                    changes = self._detect_om_changes(data.get('seqs', {}))
+                    old_om = dict(self.om)
+                    try:
+                        self.om = merge_dictionary(self.om, data)
+                        if changes:
+                            await self._handle_om_changes(changes)
+                        self.events.emit(DuetModelEvents.objectmodel, old_om)
+                    except (TypeError, KeyError, ValueError):
+                        self.logger.exception("Failed to merge WebSocket update")
+                        # Request full model on next iteration
+                        first_message = True
+
+        except Exception as e:
+            self.logger.error(f"WebSocket loop error: {e}")
+        finally:
+            self._ws_task = None
+
+    async def _stop_websocket_subscription(self) -> None:
+        """Stop WebSocket subscription."""
+        if self._ws_task is not None:
+            self._ws_task.cancel()
+            try:
+                await self._ws_task
+            except asyncio.CancelledError:
+                pass
+            self._ws_task = None
+
+        if self.sbc and hasattr(self.api, 'unsubscribe'):
+            await self.api.unsubscribe()
