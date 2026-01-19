@@ -6,6 +6,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is a bridge/connector between Duet-based 3D printers (RepRapFirmware) and SimplyPrint.io cloud service. It enables cloud printing, monitoring, and control of Duet firmware-based 3D printers via the Duet HTTP API and SimplyPrint WebSocket protocol.
 
+## Python Environment
+
+Always use a virtual environment for Python commands. Activate it before running any Python scripts:
+```bash
+source venv/bin/activate
+```
+
 ## Common Commands
 
 ```bash
