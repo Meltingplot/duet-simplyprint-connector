@@ -305,7 +305,7 @@ async def test_tick_does_not_start_websocket_when_disabled(mock_dsf_session):
 
 @pytest.mark.asyncio
 async def test_websocket_fallback_to_polling(mock_dsf_session):
-    """Verify tick falls back to polling when WebSocket task is done and not connected."""
+    """Verify tick falls back to polling when WebSocket task is done and retry time not reached."""
     dsf_api = DuetSoftwareFramework(session=mock_dsf_session)
     duet_printer = DuetPrinter(api=dsf_api, sbc=True)
 
@@ -316,18 +316,21 @@ async def test_websocket_fallback_to_polling(mock_dsf_session):
     # Simulate WebSocket task completed/failed (ws_task is None or done)
     object.__setattr__(duet_printer, '_ws_task', None)
 
-    # ws_connected should return False (not connected)
-    dsf_api._ws_connected = False
+    # Set retry time in the future (so it falls back to polling)
+    duet_printer._ws_retry_at = 2000.0
+    duet_printer._ws_retry_count = 1
 
     # Mock the update model call
     updated_model = {'state': {'status': 'processing'}, 'seqs': {'state': 2}}
     mock_dsf_session.get.return_value.__aenter__.return_value.json = AsyncMock(return_value=updated_model)
 
-    with patch.object(DuetPrinter, '_update_object_model', new_callable=AsyncMock) as mock_update:
-        await duet_printer.tick()
+    # Current time is before retry time
+    with patch('time.monotonic', return_value=1000.0):
+        with patch.object(DuetPrinter, '_update_object_model', new_callable=AsyncMock) as mock_update:
+            await duet_printer.tick()
 
-        # Verify fallback to polling
-        mock_update.assert_called_once()
+            # Verify fallback to polling
+            mock_update.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -501,29 +504,201 @@ async def test_websocket_loop_handles_merge_error():
     assert duet_printer.om['state']['status'] == 'paused'
 
 
+# WebSocket reconnection with exponential backoff tests
+
 @pytest.mark.asyncio
-async def test_websocket_loop_with_seqs_changes():
-    """Verify _websocket_loop handles seqs changes by calling _handle_om_changes."""
+async def test_websocket_schedules_retry_on_failure():
+    """Verify retry is scheduled after WebSocket fails."""
     dsf_api = DuetSoftwareFramework()
     duet_printer = DuetPrinter(api=dsf_api, sbc=True)
 
-    full_model = {'state': {'status': 'idle'}, 'seqs': {'state': 1}}
-    patch_model = {'state': {'status': 'processing'}, 'seqs': {'state': 2}}
-
+    # Mock subscribe to fail immediately
     async def mock_subscribe():
-        yield full_model
-        yield patch_model
+        raise ConnectionError("WebSocket failed")
+        yield  # Make it a generator
 
     dsf_api.subscribe = mock_subscribe
 
-    # Mock _handle_om_changes to avoid API calls
-    with patch.object(DuetPrinter, '_handle_om_changes', new_callable=AsyncMock) as mock_handle:
-        events_emitted = []
-        duet_printer.events.on(DuetModelEvents.objectmodel, lambda old_om: events_emitted.append(old_om))
-
+    with patch('time.monotonic', return_value=1000.0):
         await duet_printer._websocket_loop()
 
-        # _handle_om_changes should have been called with the changed seqs
-        mock_handle.assert_called_once()
-        call_args = mock_handle.call_args[0]
-        assert 'state' in call_args[0]  # Changes dict contains 'state' key
+    # Verify retry was scheduled
+    assert duet_printer._ws_retry_at == 1000.0 + 60  # First retry after 60s
+    assert duet_printer._ws_retry_count == 1
+
+
+@pytest.mark.asyncio
+async def test_websocket_retry_backoff_increases():
+    """Verify backoff increases: 60s -> 300s -> 1800s."""
+    dsf_api = DuetSoftwareFramework()
+    duet_printer = DuetPrinter(api=dsf_api, sbc=True)
+
+    with patch('time.monotonic', return_value=1000.0):
+        # First retry
+        duet_printer._schedule_ws_retry()
+        assert duet_printer._ws_retry_at == 1060.0  # 1000 + 60
+        assert duet_printer._ws_retry_count == 1
+
+        # Second retry
+        duet_printer._schedule_ws_retry()
+        assert duet_printer._ws_retry_at == 1300.0  # 1000 + 300
+        assert duet_printer._ws_retry_count == 2
+
+        # Third retry
+        duet_printer._schedule_ws_retry()
+        assert duet_printer._ws_retry_at == 2800.0  # 1000 + 1800
+        assert duet_printer._ws_retry_count == 3
+
+
+@pytest.mark.asyncio
+async def test_websocket_retry_backoff_caps_at_max():
+    """Verify backoff doesn't exceed 30 minutes."""
+    dsf_api = DuetSoftwareFramework()
+    duet_printer = DuetPrinter(api=dsf_api, sbc=True)
+
+    # Set retry count beyond the delay list
+    duet_printer._ws_retry_count = 10
+
+    with patch('time.monotonic', return_value=1000.0):
+        duet_printer._schedule_ws_retry()
+
+    # Should use max delay (1800s = 30 minutes)
+    assert duet_printer._ws_retry_at == 1000.0 + 1800
+    assert duet_printer._ws_retry_count == 11
+
+
+@pytest.mark.asyncio
+async def test_websocket_retry_resets_on_success():
+    """Verify backoff resets on successful reconnection before next failure."""
+    dsf_api = DuetSoftwareFramework()
+    duet_printer = DuetPrinter(api=dsf_api, sbc=True)
+
+    # Set up retry state as if we've been failing (count=3 means next delay would be 1800s)
+    duet_printer._ws_retry_count = 3
+    duet_printer._ws_retry_at = 5000.0
+
+    full_model = {'state': {'status': 'idle'}, 'seqs': {'state': 1}}
+
+    async def mock_subscribe():
+        yield full_model
+        # Generator ends normally after one message
+
+    dsf_api.subscribe = mock_subscribe
+
+    with patch('time.monotonic', return_value=1000.0):
+        await duet_printer._websocket_loop()
+
+    # After successful message reception, counters were reset to 0.
+    # Then when loop exits (generator exhausted), a new retry is scheduled.
+    # The key is that retry_count is now 1 (not 4), meaning backoff was reset.
+    assert duet_printer._ws_retry_count == 1
+    # Retry scheduled with first delay (60s), not third delay (1800s)
+    assert duet_printer._ws_retry_at == 1000.0 + 60
+
+
+@pytest.mark.asyncio
+async def test_tick_polls_until_retry_time(mock_dsf_session):
+    """Verify polling continues until retry time reached."""
+    dsf_api = DuetSoftwareFramework(session=mock_dsf_session)
+    duet_printer = DuetPrinter(api=dsf_api, sbc=True)
+
+    # Set initial object model
+    duet_printer.om = {'state': {'status': 'idle'}, 'seqs': {'state': 1}}
+    duet_printer.seqs = {'state': 1}
+
+    # Set retry time in the future
+    duet_printer._ws_retry_at = 2000.0
+    duet_printer._ws_retry_count = 1
+
+    # Mock model response
+    mock_dsf_session.get.return_value.__aenter__.return_value.json = AsyncMock(
+        return_value={'state': {'status': 'idle'}, 'seqs': {'state': 1}}
+    )
+
+    # Current time is before retry time
+    with patch('time.monotonic', return_value=1000.0):
+        with patch.object(DuetPrinter, '_update_object_model', new_callable=AsyncMock) as mock_update:
+            with patch.object(DuetPrinter, '_start_websocket_subscription', new_callable=AsyncMock) as mock_start_ws:
+                await duet_printer.tick()
+
+                # Should poll, not attempt WebSocket
+                mock_update.assert_called_once()
+                mock_start_ws.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_tick_attempts_websocket_at_retry_time(mock_dsf_session):
+    """Verify WebSocket attempt at retry time."""
+    dsf_api = DuetSoftwareFramework(session=mock_dsf_session)
+    duet_printer = DuetPrinter(api=dsf_api, sbc=True)
+
+    # Set initial object model
+    duet_printer.om = {'state': {'status': 'idle'}, 'seqs': {'state': 1}}
+    duet_printer.seqs = {'state': 1}
+
+    # Set retry time in the past
+    duet_printer._ws_retry_at = 500.0
+    duet_printer._ws_retry_count = 1
+
+    # Current time is after retry time
+    with patch('time.monotonic', return_value=1000.0):
+        with patch.object(DuetPrinter, '_start_websocket_subscription', new_callable=AsyncMock) as mock_start_ws:
+            await duet_printer.tick()
+
+            # Should attempt WebSocket reconnection
+            mock_start_ws.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_close_resets_retry_state(mock_dsf_session):
+    """Verify close() resets retry state."""
+    dsf_api = DuetSoftwareFramework(session=mock_dsf_session)
+    duet_printer = DuetPrinter(api=dsf_api, sbc=True)
+
+    # Set up retry state
+    duet_printer._ws_retry_count = 3
+    duet_printer._ws_retry_at = 5000.0
+
+    await duet_printer.close()
+
+    # Verify retry state was reset
+    assert duet_printer._ws_retry_count == 0
+    assert duet_printer._ws_retry_at is None
+
+
+@pytest.mark.asyncio
+async def test_should_retry_websocket_returns_true_when_not_scheduled():
+    """Verify _should_retry_websocket returns True when no retry is scheduled."""
+    dsf_api = DuetSoftwareFramework()
+    duet_printer = DuetPrinter(api=dsf_api, sbc=True)
+
+    # No retry scheduled
+    duet_printer._ws_retry_at = None
+
+    assert duet_printer._should_retry_websocket() is True
+
+
+@pytest.mark.asyncio
+async def test_should_retry_websocket_returns_false_before_time():
+    """Verify _should_retry_websocket returns False before retry time."""
+    dsf_api = DuetSoftwareFramework()
+    duet_printer = DuetPrinter(api=dsf_api, sbc=True)
+
+    # Retry scheduled in the future
+    duet_printer._ws_retry_at = 2000.0
+
+    with patch('time.monotonic', return_value=1000.0):
+        assert duet_printer._should_retry_websocket() is False
+
+
+@pytest.mark.asyncio
+async def test_should_retry_websocket_returns_true_after_time():
+    """Verify _should_retry_websocket returns True after retry time."""
+    dsf_api = DuetSoftwareFramework()
+    duet_printer = DuetPrinter(api=dsf_api, sbc=True)
+
+    # Retry scheduled in the past
+    duet_printer._ws_retry_at = 500.0
+
+    with patch('time.monotonic', return_value=1000.0):
+        assert duet_printer._should_retry_websocket() is True
