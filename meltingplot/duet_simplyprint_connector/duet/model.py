@@ -4,6 +4,8 @@ import asyncio
 import csv
 import io
 import logging
+import time
+from copy import deepcopy
 from enum import auto
 from typing import Optional, Union
 
@@ -20,30 +22,61 @@ from .dsf import DuetSoftwareFramework
 
 
 def merge_dictionary(source, destination):
-    """Merge multiple dictionaries."""
-    result = {}
-    try:
-        destination_dict = dict(destination)
-    except TypeError:
-        return None
+    """
+    Deep-merge.
 
-    for key, value in source.items():
-        if isinstance(value, dict):
-            result[key] = merge_dictionary(value, destination.get(key, {}))
-        elif isinstance(value, list):
-            result[key] = value
-            dest_value = destination.get(key, [])
-            if len(dest_value) == 0:
-                continue
-            if len(value) > len(dest_value):
-                raise ValueError(f"List length mismatch in merge for key: {key} src: {value} dest: {dest_value}")
-            for idx, item in enumerate(value):
-                if dest_value[idx] is not None and isinstance(item, dict):
-                    result[key][idx] = merge_dictionary(item, dest_value[idx])
-        else:
-            result[key] = destination.get(key, value)
-        destination_dict.pop(key, None)
-    result.update(destination_dict)
+    - dicts: recursively merged
+    - lists: merged by index, supports different lengths
+    - scalars: destination wins if key exists, else source
+    """
+    if not isinstance(destination, dict):
+        # Wenn destination kein dict ist, können wir es nicht sinnvoll mergen
+        return deepcopy(source)
+
+    result = deepcopy(destination)
+
+    for key, s_val in (source or {}).items():
+        if key not in destination:
+            result[key] = deepcopy(s_val)
+            continue
+
+        d_val = destination.get(key)
+
+        # dict + dict => rekursiv mergen
+        if isinstance(s_val, dict) and isinstance(d_val, dict):
+            result[key] = merge_dictionary(s_val, d_val)
+            continue
+
+        # list + list => index-basiert mergen (unterschiedliche Länge ok)
+        if isinstance(s_val, list) and isinstance(d_val, list):
+            merged_list = []
+
+            max_len = max(len(s_val), len(d_val))
+            for i in range(max_len):
+                s_item = s_val[i] if i < len(s_val) else None
+                d_item = d_val[i] if i < len(d_val) else None
+
+                # Wenn eins fehlt, nimm das andere
+                if s_item is None:
+                    merged_list.append(deepcopy(d_item))
+                    continue
+                if d_item is None:
+                    merged_list.append(deepcopy(s_item))
+                    continue
+
+                # dict-items rekursiv mergen
+                if isinstance(s_item, dict) and isinstance(d_item, dict):
+                    merged_list.append(merge_dictionary(s_item, d_item))
+                else:
+                    # "destination wins" für nicht-dict items
+                    merged_list.append(deepcopy(d_item))
+
+            result[key] = merged_list
+            continue
+
+        # Typkonflikt oder scalar => destination wins
+        result[key] = deepcopy(d_val)
+
     return result
 
 
@@ -79,6 +112,9 @@ class DuetState(CamelCaseStrEnum):
 class DuetPrinter():
     """Duet Printer model class."""
 
+    # Backoff schedule in seconds: 1 min, 5 min, 30 min (capped)
+    WS_RETRY_DELAYS = [60, 300, 1800]
+
     api: Union[RepRapFirmware, DuetSoftwareFramework] = field(factory=RepRapFirmware)
     om = field(type=dict, default=None)
     seqs = field(type=dict, factory=dict)
@@ -89,6 +125,8 @@ class DuetPrinter():
     _wait_for_reply = field(type=asyncio.Event, factory=asyncio.Event)
     _ws_task = field(type=Optional[asyncio.Task], default=None)
     _ws_enabled = field(type=bool, default=True)
+    _ws_retry_at: Optional[float] = field(default=None)
+    _ws_retry_count: int = field(default=0)
 
     def __attrs_post_init__(self) -> None:
         """Post init."""
@@ -134,6 +172,8 @@ class DuetPrinter():
     async def close(self) -> None:
         """Close the printer."""
         await self._stop_websocket_subscription()
+        self._ws_retry_at = None
+        self._ws_retry_count = 0
         await self.api.close()
         self.events.emit(DuetModelEvents.close)
 
@@ -337,11 +377,12 @@ class DuetPrinter():
         elif self.sbc and self._ws_enabled:
             # In SBC mode with WebSocket, check if task is running
             if self._ws_task is None or self._ws_task.done():
-                # WebSocket died, restart or fallback to polling
-                if hasattr(self.api, 'ws_connected') and self.api.ws_connected:
+                # WebSocket not running - check if we should retry or poll
+                if self._should_retry_websocket():
+                    self.logger.info("Attempting WebSocket reconnection...")
                     await self._start_websocket_subscription()
                 else:
-                    # Fallback to polling
+                    # Continue polling until retry time
                     await self._update_object_model()
             # else: WebSocket is handling updates, nothing to do
         else:
@@ -410,6 +451,20 @@ class DuetPrinter():
             self._reply = reply
         self._wait_for_reply.set()
 
+    def _schedule_ws_retry(self) -> None:
+        """Schedule WebSocket reconnection with exponential backoff."""
+        delay_index = min(self._ws_retry_count, len(self.WS_RETRY_DELAYS) - 1)
+        delay = self.WS_RETRY_DELAYS[delay_index]
+        self._ws_retry_at = time.monotonic() + delay
+        self._ws_retry_count += 1
+        self.logger.info(f"WebSocket reconnect scheduled in {delay}s (attempt {self._ws_retry_count})")
+
+    def _should_retry_websocket(self) -> bool:
+        """Check if it's time to retry WebSocket connection."""
+        if self._ws_retry_at is None:
+            return True  # First attempt or explicit reset
+        return time.monotonic() >= self._ws_retry_at
+
     async def _start_websocket_subscription(self) -> None:
         """Start WebSocket subscription for object model updates."""
         if not self.sbc or not self._ws_enabled:
@@ -423,9 +478,13 @@ class DuetPrinter():
     async def _websocket_loop(self) -> None:
         """Process WebSocket messages to receive and handle object model updates."""
         first_message = True
+        cancelled = False
         try:
             async for data in self.api.subscribe():
                 if first_message:
+                    # Reset retry counter on successful connection
+                    self._ws_retry_count = 0
+                    self._ws_retry_at = None
                     # First message is full object model
                     self.om = data
                     self.seqs = data.get('seqs', {})
@@ -433,22 +492,25 @@ class DuetPrinter():
                     first_message = False
                 else:
                     # Subsequent messages are patches
-                    changes = self._detect_om_changes(data.get('seqs', {}))
                     old_om = dict(self.om)
                     try:
                         self.om = merge_dictionary(self.om, data)
-                        if changes:
-                            await self._handle_om_changes(changes)
                         self.events.emit(DuetModelEvents.objectmodel, old_om)
                     except (TypeError, KeyError, ValueError):
                         self.logger.exception("Failed to merge WebSocket update")
                         # Request full model on next iteration
                         first_message = True
 
+        except asyncio.CancelledError:
+            cancelled = True
+            raise
         except Exception as e:
             self.logger.error(f"WebSocket loop error: {e}")
         finally:
             self._ws_task = None
+            # Schedule retry with backoff if not cancelled
+            if not cancelled:
+                self._schedule_ws_retry()
 
     async def _stop_websocket_subscription(self) -> None:
         """Stop WebSocket subscription."""
