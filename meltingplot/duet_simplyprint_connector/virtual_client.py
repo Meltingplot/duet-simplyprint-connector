@@ -510,7 +510,7 @@ class VirtualClient(DefaultClient[VirtualConfig]):
         heaters = self.duet.om.get('heat', {}).get('heaters', [])
         old_heaters = old_om.get('heat', {}).get('heaters', []) if old_om else []
         for idx, heater in enumerate(heaters):
-            if heater.state == 'fault' and (
+            if heater['state'] == 'fault' and (
                 len(old_heaters) != len(heaters)
                 or idx <= len(old_heaters) and old_heaters[idx].get('state') != 'fault'
             ):
@@ -561,7 +561,7 @@ class VirtualClient(DefaultClient[VirtualConfig]):
     @async_task
     async def _mesh_compensation_status(self, old_om) -> None:
         """Task to check for mesh compensation changes and send mesh data to SimplyPrint."""
-        old_compensation = old_om.get('move', {}).get('compensation', {})
+        old_compensation = old_om.get('move', {}).get('compensation', {}) if old_om else {}
         compensation = self.duet.om.get('move', {}).get('compensation', {})
 
         if compensation.get('file') and old_compensation.get('file') != compensation['file']:
