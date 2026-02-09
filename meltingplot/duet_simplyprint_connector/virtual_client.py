@@ -384,11 +384,11 @@ class VirtualClient(DefaultClient[VirtualConfig]):
 
         while timeout > time.time():
             try:
-                response = await self.duet.api.rr_fileinfo(
-                    name=f"0:/gcodes/{filename}",
+                response = await self.duet.fileinfo(
+                    filepath=f"0:/gcodes/{filename}",
                     timeout=aiohttp.ClientTimeout(total=10),
                 )
-                if response['err'] == 0:
+                if response.get('err', 0) == 0:
                     break
             except (
                 aiohttp.ClientConnectionError,
@@ -452,15 +452,15 @@ class VirtualClient(DefaultClient[VirtualConfig]):
             while retries > 0:
                 try:
                     # Ensure progress updates are sent during the upload process.
-                    response = await self.duet.api.rr_upload_stream(
+                    await self.duet.upload_stream(
                         filepath=f'{prefix}{event.file_name}',
                         file=f,
                         progress=self._upload_file_progress,
                     )
-                    if response['err'] != 0:
-                        self.printer.file_progress.state = FileProgressStateEnum.ERROR
-                        return
                     break
+                except IOError:
+                    self.printer.file_progress.state = FileProgressStateEnum.ERROR
+                    return
                 except aiohttp.ClientResponseError as e:
                     if e.status in {401, 500, 503}:
                         await self.duet.api.reconnect()
@@ -540,10 +540,10 @@ class VirtualClient(DefaultClient[VirtualConfig]):
         """Check if the cookie is set and set it if it is not."""
         self.logger.debug('Checking if cookie is set')
         try:
-            async for _ in self.duet.api.rr_download(filepath='0:/sys/simplyprint-connector.json'):
+            async for _ in self.duet.download(filepath='0:/sys/simplyprint-connector.json'):
                 break
             await asyncio.sleep(1)
-            await self.duet.api.rr_delete(filepath='0:/sys/simplyprint-connector.json')
+            await self.duet.delete(filepath='0:/sys/simplyprint-connector.json')
         except aiohttp.client_exceptions.ClientResponseError:
             self.logger.debug('Cookie not set, setting cookie')
 
@@ -553,7 +553,7 @@ class VirtualClient(DefaultClient[VirtualConfig]):
             'mac': self.printer.info.mac,
         }
         cookie_json = json.dumps(cookie_data).encode('utf-8')
-        await self.duet.api.rr_upload_stream(
+        await self.duet.upload_stream(
             filepath='0:/sys/simplyprint-connector.json',
             file=io.BytesIO(cookie_json),
         )

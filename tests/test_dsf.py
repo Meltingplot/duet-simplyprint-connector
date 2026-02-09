@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import aiohttp
 
 from .context import DuetSoftwareFramework
+from meltingplot.duet_simplyprint_connector.duet.base import DuetAPIBase
 
 
 @pytest.fixture
@@ -295,3 +296,31 @@ async def test_close(dsf, mock_session):
     await dsf.close()
     mock_session.close.assert_called_once()
     assert dsf.session is None
+
+
+def test_dsf_is_duet_api_base(dsf):
+    assert isinstance(dsf, DuetAPIBase)
+
+
+@pytest.mark.asyncio
+async def test_send_gcode(dsf, mock_session):
+    mock_session.post.return_value.__aenter__.return_value.text = AsyncMock(return_value='ok')
+    result = await dsf.send_gcode('G28', no_reply=False)
+    assert result == 'ok'
+    mock_session.post.assert_called_once_with(
+        'http://10.42.0.2/machine/code',
+        data='G28',
+        params=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_send_gcode_no_reply(dsf, mock_session):
+    mock_session.post.return_value.__aenter__.return_value.text = AsyncMock(return_value='')
+    result = await dsf.send_gcode('G28', no_reply=True)
+    assert result == ''
+    mock_session.post.assert_called_once_with(
+        'http://10.42.0.2/machine/code',
+        data='G28',
+        params={'async': 'true'},
+    )

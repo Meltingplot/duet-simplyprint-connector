@@ -4,8 +4,6 @@
 
 import asyncio
 import datetime
-import functools
-import logging
 from typing import AsyncIterable, BinaryIO, Callable, Optional
 from zlib import crc32
 
@@ -13,72 +11,16 @@ import aiohttp
 
 import attr
 
-
-def reauthenticate(retries: int = 3):
-    """Reauthenticate HTTP API requests.
-
-    Decorator that wraps async API methods with retry logic for handling
-    connection errors and authentication failures. Uses linear backoff
-    capped at RETRY_DELAY_MAX seconds.
-    """
-
-    def decorator(f):
-
-        @functools.wraps(f)
-        async def inner(self, *args, **kwargs):
-            remaining = retries
-            while remaining > 0:
-                try:
-                    return await f(self, *args, **kwargs)
-                except (TimeoutError, aiohttp.ClientPayloadError, aiohttp.ClientConnectionError) as e:
-                    self.logger.error(f"{e} - retry")
-                    remaining -= 1
-                    delay = min(2 * (retries - remaining + 1), self.RETRY_DELAY_MAX)
-                    await asyncio.sleep(delay)
-                except aiohttp.ClientResponseError as e:
-                    remaining -= 1
-                    if e.status in self.callbacks:
-                        await self.callbacks[e.status](e)
-                    elif e.status == 401:
-                        self.logger.error(
-                            f'Unauthorized while requesting {e.request_info!s} - retry',
-                        )
-                        delay = min(2 * (retries - remaining + 1), self.RETRY_DELAY_MAX)
-                        await asyncio.sleep(delay)
-                        response = await self.reconnect()
-                        if response['err'] == 0:
-                            remaining = retries
-                    else:
-                        raise e
-            raise TimeoutError(f'Retried {retries} times to reauthenticate.')
-
-        return inner
-
-    return decorator
+from .base import DuetAPIBase, reauthenticate
 
 
 @attr.s
-class RepRapFirmware():
+class RepRapFirmware(DuetAPIBase):
     """RepRapFirmware API Class."""
 
-    # Class constants
-    DEFAULT_SESSION_TIMEOUT = 8000
-    DEFAULT_HTTP_TIMEOUT = 15
-    DEFAULT_HTTP_RETRIES = 3
-    RETRY_DELAY_MAX = 10
     REPLY_CACHE_TTL = 10
-    UPLOAD_TIMEOUT = 60 * 30  # 30 minutes
-    UPLOAD_CHUNK_SIZE = 8192
 
-    address = attr.ib(type=str, default="http://10.42.0.2")
     password = attr.ib(type=str, default="meltingplot")
-    session_timeout = attr.ib(type=int, default=DEFAULT_SESSION_TIMEOUT)
-    http_timeout = attr.ib(type=int, default=DEFAULT_HTTP_TIMEOUT)
-    http_retries = attr.ib(type=int, default=DEFAULT_HTTP_RETRIES)
-    session = attr.ib(type=aiohttp.ClientSession, default=None)
-    logger = attr.ib(type=logging.Logger, factory=logging.getLogger)
-    callbacks = attr.ib(type=dict, factory=dict)
-    _reconnect_lock = attr.ib(type=asyncio.Lock, factory=asyncio.Lock)
     _last_reply = attr.ib(type=str, default='')
     _last_reply_timeout = attr.ib(type=datetime.datetime, factory=datetime.datetime.now)
 
@@ -99,15 +41,6 @@ class RepRapFirmware():
         # HTTP status code 503 is returned.
         self.logger.error(f'Duet busy {e.request_info!s} - retry')
         await asyncio.sleep(5)
-
-    @address.validator
-    def _validate_address(self, attribute, value):
-        if not value.startswith('http://') and not value.startswith('https://'):
-            raise ValueError('Address must start with http:// or https://')
-
-    async def connect(self) -> dict:
-        """Connect to the Duet."""
-        return await self.reconnect()
 
     async def reconnect(self) -> dict:
         """Reconnect to the Duet."""
@@ -148,12 +81,6 @@ class RepRapFirmware():
 
             return json_response
 
-    async def close(self) -> None:
-        """Close the Client Session."""
-        if self.session is not None and not self.session.closed:
-            await self.session.close()
-            self.session = None
-
     async def disconnect(self) -> dict:
         """Disconnect from the Duet."""
         await self._ensure_session()
@@ -165,11 +92,6 @@ class RepRapFirmware():
             response = await r.json()
         await self.close()
         return response
-
-    async def _ensure_session(self) -> None:
-        """Ensure a valid session."""
-        if self.session is None or self.session.closed:
-            await self.reconnect()
 
     @reauthenticate()
     async def rr_model(
@@ -525,3 +447,58 @@ class RepRapFirmware():
             response = await r.json()
 
         return response
+
+    # --- Unified interface methods delegating to rr_* ---
+
+    async def send_gcode(self, command: str, no_reply: bool = True) -> str:
+        """Send G-code via the unified interface."""
+        await self.rr_gcode(gcode=command, no_reply=True)
+        return '' if no_reply else await self.rr_reply()
+
+    async def download(
+        self,
+        filepath: str,
+        chunk_size: Optional[int] = 1024,
+    ) -> AsyncIterable:
+        """Download a file via the unified interface."""
+        async for chunk in self.rr_download(filepath=filepath, chunk_size=chunk_size):
+            yield chunk
+
+    async def upload_stream(
+        self,
+        filepath: str,
+        file: BinaryIO,
+        progress: Optional[Callable] = None,
+    ) -> None:
+        """Upload a file via the unified interface.
+
+        :raises IOError: If the upload fails
+        """
+        response = await self.rr_upload_stream(filepath=filepath, file=file, progress=progress)
+        if response.get('err', 0) != 0:
+            raise IOError(f"Upload failed: {response}")
+
+    async def delete(self, filepath: str) -> None:
+        """Delete a file via the unified interface."""
+        await self.rr_delete(filepath=filepath)
+
+    async def fileinfo(self, filepath: str, **kwargs) -> dict:
+        """Get file info via the unified interface."""
+        return await self.rr_fileinfo(name=filepath, **kwargs)
+
+    async def filelist(self, directory: str) -> list:
+        """List files via the unified interface."""
+        return await self.rr_filelist(directory=directory)
+
+    async def mkdir(self, directory: str) -> None:
+        """Create directory via the unified interface."""
+        await self.rr_mkdir(directory=directory)
+
+    async def move(
+        self,
+        old_filepath: str,
+        new_filepath: str,
+        overwrite: bool = False,
+    ) -> None:
+        """Move file via the unified interface."""
+        await self.rr_move(old_filepath, new_filepath, overwrite)

@@ -7,7 +7,7 @@ import logging
 import time
 from copy import deepcopy
 from enum import auto
-from typing import Optional, Union
+from typing import AsyncIterable, BinaryIO, Callable, Optional
 
 import aiohttp
 
@@ -18,6 +18,7 @@ from pyee.asyncio import AsyncIOEventEmitter
 from strenum import CamelCaseStrEnum, StrEnum
 
 from .api import RepRapFirmware
+from .base import DuetAPIBase
 from .dsf import DuetSoftwareFramework
 
 
@@ -115,7 +116,7 @@ class DuetPrinter():
     # Backoff schedule in seconds: 1 min, 5 min, 30 min (capped)
     WS_RETRY_DELAYS = [60, 300, 1800]
 
-    api: Union[RepRapFirmware, DuetSoftwareFramework] = field(factory=RepRapFirmware)
+    api: DuetAPIBase = field(factory=RepRapFirmware)
     om = field(type=dict, default=None)
     seqs = field(type=dict, factory=dict)
     logger = field(type=logging.Logger, factory=logging.getLogger)
@@ -187,7 +188,7 @@ class DuetPrinter():
         """Send a GCode command to the printer."""
         self.logger.debug(f"Sending GCode: {command}")
         self._wait_for_reply.clear()
-        result = await self._api_send_gcode(command, no_reply)
+        result = await self.api.send_gcode(command, no_reply)
         if self.sbc:
             if not no_reply:
                 self._reply = result
@@ -202,7 +203,7 @@ class DuetPrinter():
         compensation = self.om['move']['compensation']
         heightmap = io.BytesIO()
 
-        async for chunk in self._api_download(filepath=compensation['file']):
+        async for chunk in self.api.download(filepath=compensation['file']):
             heightmap.write(chunk)
 
         heightmap.seek(0)
@@ -237,22 +238,34 @@ class DuetPrinter():
         await self._wait_for_reply.wait()
         return self._reply
 
-    async def _api_send_gcode(self, command: str, no_reply: bool = True) -> str:
-        """Send G-code command, abstracting API differences."""
-        if self.sbc:
-            return await self.api.code(command, async_exec=no_reply)
-        else:
-            await self.api.rr_gcode(gcode=command, no_reply=True)
-            return '' if no_reply else await self.api.rr_reply()
+    async def download(
+        self,
+        filepath: str,
+        chunk_size: int = 1024,
+    ) -> AsyncIterable:
+        """Download a file from the printer."""
+        async for chunk in self.api.download(filepath=filepath, chunk_size=chunk_size):
+            yield chunk
 
-    async def _api_download(self, filepath: str, chunk_size: int = 1024):
-        """Download file, abstracting API differences."""
-        if self.sbc:
-            async for chunk in self.api.download(filename=filepath, chunk_size=chunk_size):
-                yield chunk
-        else:
-            async for chunk in self.api.rr_download(filepath=filepath, chunk_size=chunk_size):
-                yield chunk
+    async def upload_stream(
+        self,
+        filepath: str,
+        file: BinaryIO,
+        progress: Optional[Callable] = None,
+    ) -> None:
+        """Upload a file to the printer.
+
+        :raises IOError: If the upload fails
+        """
+        await self.api.upload_stream(filepath=filepath, file=file, progress=progress)
+
+    async def delete(self, filepath: str) -> None:
+        """Delete a file on the printer."""
+        await self.api.delete(filepath=filepath)
+
+    async def fileinfo(self, filepath: str, **kwargs) -> dict:
+        """Get file information from the printer."""
+        return await self.api.fileinfo(filepath=filepath, **kwargs)
 
     async def _fetch_objectmodel_recursive(
         self,

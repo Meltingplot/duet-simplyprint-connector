@@ -3,15 +3,15 @@
 """Duet Software Framework (SBC mode) HTTP API Module."""
 
 import asyncio
-import functools
 import json
-import logging
 from typing import AsyncIterable, AsyncIterator, BinaryIO, Callable, Optional
 from urllib.parse import quote
 
 import aiohttp
 
 import attr
+
+from .base import DuetAPIBase, reauthenticate
 
 
 class DSFAuthenticationError(Exception):
@@ -20,72 +20,10 @@ class DSFAuthenticationError(Exception):
     pass
 
 
-def reauthenticate_dsf(retries: int = 3):
-    """Reauthenticate DSF API requests.
-
-    Decorator that wraps async API methods with retry logic for handling
-    connection errors and authentication failures. Uses linear backoff
-    capped at RETRY_DELAY_MAX seconds.
-
-    DSF uses HTTP 403 for authentication errors instead of 401.
-    """
-
-    def decorator(f):
-
-        @functools.wraps(f)
-        async def inner(self, *args, **kwargs):
-            remaining = retries
-            while remaining > 0:
-                try:
-                    return await f(self, *args, **kwargs)
-                except (TimeoutError, aiohttp.ClientPayloadError, aiohttp.ClientConnectionError) as e:
-                    self.logger.error(f"{e} - retry")
-                    remaining -= 1
-                    delay = min(2 * (retries - remaining + 1), self.RETRY_DELAY_MAX)
-                    await asyncio.sleep(delay)
-                except aiohttp.ClientResponseError as e:
-                    remaining -= 1
-                    if e.status in self.callbacks:
-                        await self.callbacks[e.status](e)
-                    elif e.status == 403:
-                        # DSF uses 403 for authentication errors
-                        self.logger.error(
-                            f'Forbidden while requesting {e.request_info!s} - retry',
-                        )
-                        delay = min(2 * (retries - remaining + 1), self.RETRY_DELAY_MAX)
-                        await asyncio.sleep(delay)
-                        await self.reconnect()
-                        remaining = retries
-                    else:
-                        raise e
-            raise TimeoutError(f'Retried {retries} times to reauthenticate.')
-
-        return inner
-
-    return decorator
-
-
 @attr.s
-class DuetSoftwareFramework():
+class DuetSoftwareFramework(DuetAPIBase):
     """Duet Software Framework (SBC mode) API Class."""
 
-    # Class constants
-    DEFAULT_SESSION_TIMEOUT = 8000
-    DEFAULT_HTTP_TIMEOUT = 15
-    DEFAULT_HTTP_RETRIES = 3
-    RETRY_DELAY_MAX = 10
-    UPLOAD_TIMEOUT = 60 * 30  # 30 minutes
-    UPLOAD_CHUNK_SIZE = 8192
-
-    address = attr.ib(type=str, default="http://10.42.0.2")
-    password = attr.ib(type=str, default="reprap")
-    session_timeout = attr.ib(type=int, default=DEFAULT_SESSION_TIMEOUT)
-    http_timeout = attr.ib(type=int, default=DEFAULT_HTTP_TIMEOUT)
-    http_retries = attr.ib(type=int, default=DEFAULT_HTTP_RETRIES)
-    session = attr.ib(type=aiohttp.ClientSession, default=None)
-    logger = attr.ib(type=logging.Logger, factory=logging.getLogger)
-    callbacks = attr.ib(type=dict, factory=dict)
-    _reconnect_lock = attr.ib(type=asyncio.Lock, factory=asyncio.Lock)
     _ws = attr.ib(type=Optional[aiohttp.ClientWebSocketResponse], default=None)
     _ws_connected = attr.ib(type=bool, default=False)
 
@@ -103,15 +41,6 @@ class DuetSoftwareFramework():
         # HTTP 503 indicates DCS is unavailable
         self.logger.error(f'DSF unavailable {e.request_info!s} - retry')
         await asyncio.sleep(5)
-
-    @address.validator
-    def _validate_address(self, attribute, value):
-        if not value.startswith('http://') and not value.startswith('https://'):
-            raise ValueError('Address must start with http:// or https://')
-
-    async def connect(self) -> dict:
-        """Connect to the Duet via DSF."""
-        return await self.reconnect()
 
     async def reconnect(self) -> dict:
         """Reconnect to the Duet via DSF."""
@@ -147,12 +76,6 @@ class DuetSoftwareFramework():
 
             return json_response
 
-    async def close(self) -> None:
-        """Close the Client Session."""
-        if self.session is not None and not self.session.closed:
-            await self.session.close()
-            self.session = None
-
     async def disconnect(self) -> None:
         """Disconnect from the Duet via DSF."""
         await self._ensure_session()
@@ -165,11 +88,6 @@ class DuetSoftwareFramework():
                 self.logger.warning(f'Unexpected status {r.status} during disconnect')
 
         await self.close()
-
-    async def _ensure_session(self) -> None:
-        """Ensure a valid session."""
-        if self.session is None or self.session.closed:
-            await self.reconnect()
 
     def _build_ws_url(self) -> str:
         """Build WebSocket URL with session key."""
@@ -251,7 +169,7 @@ class DuetSoftwareFramework():
         """Check if WebSocket is connected."""
         return self._ws_connected and self._ws is not None and not self._ws.closed
 
-    @reauthenticate_dsf()
+    @reauthenticate(auth_error_status=403)
     async def noop(self) -> None:
         """Send keep-alive request to DSF."""
         await self._ensure_session()
@@ -263,7 +181,7 @@ class DuetSoftwareFramework():
             if r.status != 204:
                 self.logger.warning(f'Unexpected status {r.status} during noop')
 
-    @reauthenticate_dsf()
+    @reauthenticate(auth_error_status=403)
     async def model(self) -> dict:
         """Get the full machine object model."""
         self.logger.debug("model: fetching full object model")
@@ -277,7 +195,7 @@ class DuetSoftwareFramework():
             response = await r.json()
         return response
 
-    @reauthenticate_dsf()
+    @reauthenticate(auth_error_status=403)
     async def status(self) -> dict:
         """Get machine object model (alias for model in DSF v3.4.6+)."""
         self.logger.debug("status: fetching machine status")
@@ -291,7 +209,7 @@ class DuetSoftwareFramework():
             response = await r.json()
         return response
 
-    @reauthenticate_dsf()
+    @reauthenticate(auth_error_status=403)
     async def code(self, gcode: str, async_exec: bool = False) -> str:
         """Execute G-code on the Duet via DSF.
 
@@ -312,42 +230,48 @@ class DuetSoftwareFramework():
             response = await r.text()
         return response
 
+    # --- Unified interface methods ---
+
+    async def send_gcode(self, command: str, no_reply: bool = True) -> str:
+        """Send G-code via the unified interface."""
+        return await self.code(command, async_exec=no_reply)
+
     async def download(
         self,
-        filename: str,
+        filepath: str,
         chunk_size: Optional[int] = 1024,
     ) -> AsyncIterable:
         """Download a file from the Duet via DSF.
 
-        :param filename: Path to the file on the Duet (e.g., '0:/gcodes/test.gcode')
+        :param filepath: Path to the file on the Duet (e.g., '0:/gcodes/test.gcode')
         :param chunk_size: Size of chunks to yield
         """
         await self._ensure_session()
 
-        # URL-encode the filename in the path
-        encoded_filename = quote(filename, safe='')
-        url = f'{self.address}/machine/file/{encoded_filename}'
+        # URL-encode the filepath in the path
+        encoded_filepath = quote(filepath, safe='')
+        url = f'{self.address}/machine/file/{encoded_filepath}'
 
         async with self.session.get(url) as r:
             async for chunk in r.content.iter_chunked(chunk_size):
                 yield chunk
 
-    @reauthenticate_dsf()
+    @reauthenticate(auth_error_status=403)
     async def upload(
         self,
-        filename: str,
+        filepath: str,
         content: bytes,
     ) -> None:
         """Upload a file to the Duet via DSF.
 
-        :param filename: Destination path on the Duet (e.g., '0:/gcodes/test.gcode')
+        :param filepath: Destination path on the Duet (e.g., '0:/gcodes/test.gcode')
         :param content: File content as bytes
         """
         await self._ensure_session()
 
-        # URL-encode the filename in the path
-        encoded_filename = quote(filename, safe='')
-        url = f'{self.address}/machine/file/{encoded_filename}'
+        # URL-encode the filepath in the path
+        encoded_filepath = quote(filepath, safe='')
+        url = f'{self.address}/machine/file/{encoded_filepath}'
 
         if isinstance(content, str):
             content = content.encode('utf-8')
@@ -363,21 +287,21 @@ class DuetSoftwareFramework():
 
     async def upload_stream(
         self,
-        filename: str,
+        filepath: str,
         file: BinaryIO,
         progress: Optional[Callable] = None,
     ) -> None:
         """Upload a file to the Duet via DSF using streaming.
 
-        :param filename: Destination path on the Duet
+        :param filepath: Destination path on the Duet
         :param file: File-like object to upload
         :param progress: Optional callback for progress updates (0-100)
         """
         await self._ensure_session()
 
-        # URL-encode the filename in the path
-        encoded_filename = quote(filename, safe='')
-        url = f'{self.address}/machine/file/{encoded_filename}'
+        # URL-encode the filepath in the path
+        encoded_filepath = quote(filepath, safe='')
+        url = f'{self.address}/machine/file/{encoded_filepath}'
 
         # Get file size
         file.seek(0, 2)  # Seek to end
@@ -413,18 +337,18 @@ class DuetSoftwareFramework():
             if r.status not in (200, 201):
                 self.logger.warning(f'Unexpected status {r.status} during upload_stream')
 
-    @reauthenticate_dsf()
-    async def delete(self, filename: str, recursive: bool = False) -> None:
+    @reauthenticate(auth_error_status=403)
+    async def delete(self, filepath: str, recursive: bool = False) -> None:
         """Delete a file or directory from the Duet via DSF.
 
-        :param filename: Path to delete on the Duet
+        :param filepath: Path to delete on the Duet
         :param recursive: If True, delete directories recursively
         """
         await self._ensure_session()
 
-        # URL-encode the filename in the path
-        encoded_filename = quote(filename, safe='')
-        url = f'{self.address}/machine/file/{encoded_filename}'
+        # URL-encode the filepath in the path
+        encoded_filepath = quote(filepath, safe='')
+        url = f'{self.address}/machine/file/{encoded_filepath}'
 
         params = {}
         if recursive:
@@ -435,36 +359,36 @@ class DuetSoftwareFramework():
             if r.status != 204:
                 self.logger.warning(f'Unexpected status {r.status} during delete')
 
-    @reauthenticate_dsf()
-    async def fileinfo(self, filename: str) -> dict:
+    @reauthenticate(auth_error_status=403)
+    async def fileinfo(self, filepath: str, **kwargs) -> dict:
         """Get parsed file information from DSF.
 
-        :param filename: Path to the file on the Duet
+        :param filepath: Path to the file on the Duet
         :return: Parsed file information
         """
         await self._ensure_session()
 
-        # URL-encode the filename in the path
-        encoded_filename = quote(filename, safe='')
-        url = f'{self.address}/machine/fileinfo/{encoded_filename}'
+        # URL-encode the filepath in the path
+        encoded_filepath = quote(filepath, safe='')
+        url = f'{self.address}/machine/fileinfo/{encoded_filepath}'
 
         response = {}
         async with self.session.get(url) as r:
             response = await r.json()
         return response
 
-    @reauthenticate_dsf()
+    @reauthenticate(auth_error_status=403)
     async def move(
         self,
-        from_path: str,
-        to_path: str,
-        force: bool = False,
+        old_filepath: str,
+        new_filepath: str,
+        overwrite: bool = False,
     ) -> None:
         """Move a file on the Duet via DSF.
 
-        :param from_path: Source path
-        :param to_path: Destination path
-        :param force: If True, overwrite existing file at destination
+        :param old_filepath: Source path
+        :param new_filepath: Destination path
+        :param overwrite: If True, overwrite existing file at destination
         """
         await self._ensure_session()
 
@@ -472,9 +396,9 @@ class DuetSoftwareFramework():
 
         # DSF expects form-encoded body
         data = aiohttp.FormData()
-        data.add_field('from', from_path)
-        data.add_field('to', to_path)
-        if force:
+        data.add_field('from', old_filepath)
+        data.add_field('to', new_filepath)
+        if overwrite:
             data.add_field('force', 'true')
 
         async with self.session.post(url, data=data) as r:
@@ -482,7 +406,7 @@ class DuetSoftwareFramework():
             if r.status != 204:
                 self.logger.warning(f'Unexpected status {r.status} during move')
 
-    @reauthenticate_dsf()
+    @reauthenticate(auth_error_status=403)
     async def filelist(self, directory: str) -> list:
         """List files in a directory on the Duet via DSF.
 
@@ -500,7 +424,7 @@ class DuetSoftwareFramework():
             response = await r.json()
         return response
 
-    @reauthenticate_dsf()
+    @reauthenticate(auth_error_status=403)
     async def mkdir(self, directory: str) -> None:
         """Create a directory on the Duet via DSF.
 
@@ -517,7 +441,7 @@ class DuetSoftwareFramework():
             if r.status != 204:
                 self.logger.warning(f'Unexpected status {r.status} during mkdir')
 
-    @reauthenticate_dsf()
+    @reauthenticate(auth_error_status=403)
     async def install_plugin(self, content: bytes) -> None:
         """Install a plugin on the Duet via DSF.
 
@@ -537,7 +461,7 @@ class DuetSoftwareFramework():
             if r.status != 204:
                 self.logger.warning(f'Unexpected status {r.status} during install_plugin')
 
-    @reauthenticate_dsf()
+    @reauthenticate(auth_error_status=403)
     async def uninstall_plugin(self, name: str) -> None:
         """Uninstall a plugin from the Duet via DSF.
 
@@ -557,7 +481,7 @@ class DuetSoftwareFramework():
             if r.status != 204:
                 self.logger.warning(f'Unexpected status {r.status} during uninstall_plugin')
 
-    @reauthenticate_dsf()
+    @reauthenticate(auth_error_status=403)
     async def set_plugin_data(self, plugin: str, key: str, value: str) -> None:
         """Set plugin data via DSF.
 
@@ -580,7 +504,7 @@ class DuetSoftwareFramework():
             if r.status != 204:
                 self.logger.warning(f'Unexpected status {r.status} during set_plugin_data')
 
-    @reauthenticate_dsf()
+    @reauthenticate(auth_error_status=403)
     async def start_plugin(self, name: str) -> None:
         """Start a plugin on the Duet via DSF.
 
@@ -599,7 +523,7 @@ class DuetSoftwareFramework():
             if r.status != 204:
                 self.logger.warning(f'Unexpected status {r.status} during start_plugin')
 
-    @reauthenticate_dsf()
+    @reauthenticate(auth_error_status=403)
     async def stop_plugin(self, name: str) -> None:
         """Stop a plugin on the Duet via DSF.
 

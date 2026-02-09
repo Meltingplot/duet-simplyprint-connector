@@ -194,7 +194,7 @@ async def test_download_sbc_mode(mock_dsf_session):
     mock_dsf_session.get.return_value.__aenter__.return_value.content.iter_chunked = chunks
 
     downloaded = []
-    async for chunk in duet_printer._api_download(filepath='0:/gcodes/test.gcode'):
+    async for chunk in duet_printer.download(filepath='0:/gcodes/test.gcode'):
         downloaded.append(chunk)
 
     assert downloaded == [b'chunk1', b'chunk2']

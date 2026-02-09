@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 import aiohttp
 
 from .context import RepRapFirmware
+from meltingplot.duet_simplyprint_connector.duet.base import DuetAPIBase
 
 
 @pytest.fixture
@@ -150,3 +151,91 @@ async def test_reconnect_with_session_timeout(reprapfirmware, mock_session):
     assert response == {'err': 0, 'sessionTimeout': 10000}
     assert reprapfirmware.session_timeout == 10000
     mock_session.get.assert_called_once_with('http://10.42.0.2/rr_connect', params={'password': 'meltingplot', 'sessionKey': 'yes'})
+
+
+def test_reprapfirmware_is_duet_api_base(reprapfirmware):
+    assert isinstance(reprapfirmware, DuetAPIBase)
+
+
+@pytest.mark.asyncio
+async def test_send_gcode(reprapfirmware, mock_session):
+    reprapfirmware.rr_reply = AsyncMock(return_value='ok')
+    result = await reprapfirmware.send_gcode('G28', no_reply=True)
+    assert result == ''
+
+
+@pytest.mark.asyncio
+async def test_send_gcode_with_reply(reprapfirmware, mock_session):
+    reprapfirmware.rr_reply = AsyncMock(return_value='ok')
+    result = await reprapfirmware.send_gcode('G28', no_reply=False)
+    assert result == 'ok'
+
+
+@pytest.mark.asyncio
+async def test_unified_download(reprapfirmware, mock_session):
+
+    async def chunks(size):
+        for item in [b'chunk1', b'chunk2']:
+            yield item
+
+    mock_session.get.return_value.__aenter__.return_value.content.iter_chunked = chunks
+    downloaded = []
+    async for chunk in reprapfirmware.download('test.txt'):
+        downloaded.append(chunk)
+    assert downloaded == [b'chunk1', b'chunk2']
+
+
+@pytest.mark.asyncio
+async def test_unified_upload_stream_success(reprapfirmware, mock_session):
+    file = MagicMock()
+    file.tell.return_value = 10
+    file.read.side_effect = [b'chunk1', b'chunk2', b'']
+    mock_session.reset_mock()
+    mock_session.post.return_value.__aenter__.return_value.json = AsyncMock(return_value={'err': 0})
+    await reprapfirmware.upload_stream('test.txt', file)
+
+
+@pytest.mark.asyncio
+async def test_unified_upload_stream_failure(reprapfirmware, mock_session):
+    file = MagicMock()
+    file.tell.return_value = 10
+    file.read.side_effect = [b'chunk1', b'chunk2', b'']
+    mock_session.reset_mock()
+    mock_session.post.return_value.__aenter__.return_value.json = AsyncMock(return_value={'err': 1})
+    with pytest.raises(IOError):
+        await reprapfirmware.upload_stream('test.txt', file)
+
+
+@pytest.mark.asyncio
+async def test_unified_delete(reprapfirmware, mock_session):
+    await reprapfirmware.delete('test.txt')
+    mock_session.get.assert_called_once_with('http://10.42.0.2/rr_delete', params={'name': 'test.txt'})
+
+
+@pytest.mark.asyncio
+async def test_unified_fileinfo(reprapfirmware, mock_session):
+    response = await reprapfirmware.fileinfo('test.txt')
+    assert response == {'err': 0}
+    mock_session.get.assert_called_once_with('http://10.42.0.2/rr_fileinfo', params={'name': 'test.txt'})
+
+
+@pytest.mark.asyncio
+async def test_unified_filelist(reprapfirmware, mock_session):
+    response = await reprapfirmware.filelist('/path/to/directory')
+    assert response == {'err': 0}
+    mock_session.get.assert_called_once_with('http://10.42.0.2/rr_filelist', params={'dir': '/path/to/directory'})
+
+
+@pytest.mark.asyncio
+async def test_unified_mkdir(reprapfirmware, mock_session):
+    await reprapfirmware.mkdir('/path/to/directory')
+    mock_session.get.assert_called_once_with('http://10.42.0.2/rr_mkdir', params={'dir': '/path/to/directory'})
+
+
+@pytest.mark.asyncio
+async def test_unified_move(reprapfirmware, mock_session):
+    await reprapfirmware.move('old.txt', 'new.txt', overwrite=True)
+    mock_session.get.assert_called_once_with(
+        'http://10.42.0.2/rr_move',
+        params={'old': 'old.txt', 'new': 'new.txt', 'deleteexisting': 'yes'},
+    )
