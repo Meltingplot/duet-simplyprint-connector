@@ -23,6 +23,7 @@ def reauthenticate(retries: int = 3):
     """
 
     def decorator(f):
+
         @functools.wraps(f)
         async def inner(self, *args, **kwargs):
             remaining = retries
