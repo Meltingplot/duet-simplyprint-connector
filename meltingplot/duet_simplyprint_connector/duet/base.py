@@ -13,7 +13,6 @@ import logging
 from typing import AsyncIterable, BinaryIO, Callable, Optional
 
 import aiohttp
-
 import attr
 
 

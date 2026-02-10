@@ -15,9 +15,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 import aiohttp
-
 import psutil
-
 from simplyprint_ws_client.const import VERSION as SP_VERSION
 from simplyprint_ws_client.core.client import ClientConfigChangedEvent, DefaultClient
 from simplyprint_ws_client.core.config import PrinterConfig

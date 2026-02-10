@@ -8,7 +8,6 @@ from typing import AsyncIterable, AsyncIterator, BinaryIO, Callable, Optional
 from urllib.parse import quote
 
 import aiohttp
-
 import attr
 
 from .base import DuetAPIBase, reauthenticate

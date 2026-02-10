@@ -5,9 +5,9 @@ import click
 @click.command()
 def install_as_service():
     """Install the Simplyprint Connector as a systemd service."""
-    import os
     import getpass
     import grp
+    import os
     import subprocess
     import sys
     import tempfile

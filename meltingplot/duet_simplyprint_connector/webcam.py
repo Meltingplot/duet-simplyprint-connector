@@ -7,16 +7,10 @@ from dataclasses import dataclass
 from typing import Union
 
 import aiohttp
-
-from attr import define, field
-
 import imageio.v3 as iio
-
+from attr import define, field
 from simplyprint_ws_client.core.client import Client
-from simplyprint_ws_client.core.ws_protocol.messages import (
-    StreamMsg,
-)
-
+from simplyprint_ws_client.core.ws_protocol.messages import StreamMsg
 from yarl import URL
 
 from .task import async_task

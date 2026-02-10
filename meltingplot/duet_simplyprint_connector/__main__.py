@@ -4,10 +4,8 @@ import logging
 import socket
 from urllib.parse import urlparse
 
-import PIL  # noqa
-
 import click
-
+import PIL  # noqa
 from simplyprint_ws_client.core.app import ClientApp
 from simplyprint_ws_client.core.config import ConfigManagerType
 from simplyprint_ws_client.core.settings import ClientSettings
@@ -77,10 +75,10 @@ def run_app(autodiscover, app, profile, watchdog: Watchdog):
         logging.error(f"Error during network scan: {e}")
 
     if profile:
-        import cProfile
         import atexit
-        import pstats
+        import cProfile
         import io
+        import pstats
 
         click.echo("Profiling enabled")
         pr = cProfile.Profile()
