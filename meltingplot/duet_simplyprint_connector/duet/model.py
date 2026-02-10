@@ -128,6 +128,8 @@ class DuetPrinter():
     _ws_enabled = field(type=bool, default=True)
     _ws_retry_at: Optional[float] = field(default=None)
     _ws_retry_count: int = field(default=0)
+    _rrf_poll_interval: float = field(default=3.0)
+    _last_poll_at: float = field(default=0.0)
 
     def __attrs_post_init__(self) -> None:
         """Post init."""
@@ -400,7 +402,10 @@ class DuetPrinter():
                     await self._update_object_model()
             # else: WebSocket is handling updates, nothing to do
         else:
-            await self._update_object_model()
+            now = time.monotonic()
+            if now - self._last_poll_at >= self._rrf_poll_interval:
+                self._last_poll_at = now
+                await self._update_object_model()
 
     async def _initialize_object_model(self) -> None:
         """Initialize the object model by fetching the full status."""
