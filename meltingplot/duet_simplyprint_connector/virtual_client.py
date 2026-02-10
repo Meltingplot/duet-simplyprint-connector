@@ -491,7 +491,7 @@ class VirtualClient(DefaultClient[VirtualConfig]):
     async def on_start_print(self, _) -> None:
         """Start the print job."""
         await self.duet.gcode(
-            f'M23 "0:/gcodes/{self.printer.job_info.filename.root}"',
+            f'M23 "0:/gcodes/{self.printer.job_info.filename}"',
         )
         await self.duet.gcode('M24')
 
@@ -527,15 +527,15 @@ class VirtualClient(DefaultClient[VirtualConfig]):
         heaters = self.duet.om['heat']['heaters']
         bed_heater_index = self.duet.om['heat']['bedHeaters'][0]
 
-        self.printer.bed_temperature.actual = heaters[bed_heater_index]['current']
-        self.printer.bed_temperature.target = (
+        self.printer.bed.temperature.actual = heaters[bed_heater_index]['current']
+        self.printer.bed.temperature.target = (
             heaters[bed_heater_index]['active'] if heaters[0]['state'] != 'off' else 0.0
         )
 
-        for tool_idx, tool_temperature in enumerate(self.printer.tool_temperatures):
+        for tool_idx, tool in enumerate(self.printer.tools):
             heater_idx = self.duet.om['tools'][tool_idx]['heaters'][0]
-            tool_temperature.actual = heaters[heater_idx]['current']
-            tool_temperature.target = (heaters[heater_idx]['active'] if heaters[1]['state'] != 'off' else 0.0)
+            tool.temperature.actual = heaters[heater_idx]['current']
+            tool.temperature.target = (heaters[heater_idx]['active'] if heaters[1]['state'] != 'off' else 0.0)
 
         self.printer.ambient_temperature.ambient = 20
 
