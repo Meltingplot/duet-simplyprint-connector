@@ -220,6 +220,13 @@ async def test_unified_fileinfo(reprapfirmware, mock_session):
 
 
 @pytest.mark.asyncio
+async def test_unified_fileinfo_not_found(reprapfirmware, mock_session):
+    mock_session.get.return_value.__aenter__.return_value.json = AsyncMock(return_value={'err': 1})
+    with pytest.raises(FileNotFoundError, match='File not found: missing.gcode'):
+        await reprapfirmware.fileinfo('missing.gcode')
+
+
+@pytest.mark.asyncio
 async def test_unified_filelist(reprapfirmware, mock_session):
     response = await reprapfirmware.filelist('/path/to/directory')
     assert response == {'err': 0}

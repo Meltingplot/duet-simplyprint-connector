@@ -388,13 +388,16 @@ class VirtualClient(DefaultClient[VirtualConfig]):
                     filepath=f"0:/gcodes/{filename}",
                     timeout=aiohttp.ClientTimeout(total=10),
                 )
-                if response.get('err', 0) == 0:
-                    break
+                self.logger.debug(f"File info response: {response}")
+                break
             except (
+                FileNotFoundError,
+                aiohttp.ClientResponseError,
                 aiohttp.ClientConnectionError,
                 TimeoutError,
                 asyncio.TimeoutError,
             ):
+                self.logger.exception("An exception occurred while checking if file is ready")
                 pass
 
             timeleft = 10 - ((timeout - time.time()) * 0.025)

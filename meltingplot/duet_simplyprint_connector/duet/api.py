@@ -484,7 +484,10 @@ class RepRapFirmware(DuetAPIBase):
 
     async def fileinfo(self, filepath: str, **kwargs) -> dict:
         """Get file info via the unified interface."""
-        return await self.rr_fileinfo(name=filepath, **kwargs)
+        response = await self.rr_fileinfo(name=filepath, **kwargs)
+        if response.get('err', 0) != 0:
+            raise FileNotFoundError(f"File not found: {filepath}")
+        return response
 
     async def filelist(self, directory: str) -> list:
         """List files via the unified interface."""
