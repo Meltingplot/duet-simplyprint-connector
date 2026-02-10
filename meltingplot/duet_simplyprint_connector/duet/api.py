@@ -70,14 +70,23 @@ class RepRapFirmware(DuetAPIBase):
             async with self.session.get(url, params=params) as r:
                 json_response = await r.json()
 
-            try:
-                if json_response['err'] == 0:
-                    if 'sessionKey' in json_response:
-                        self.session.headers['X-Session-Key'] = str(json_response['sessionKey'])
-                    if 'sessionTimeout' in json_response:
-                        self.session_timeout = json_response['sessionTimeout']
-            except KeyError as e:
-                raise e
+            if json_response.get('err', 0) != 0:
+                raise aiohttp.ClientResponseError(
+                    request_info=aiohttp.RequestInfo(
+                        url=url,
+                        method='GET',
+                        headers={},
+                        real_url=url,
+                    ),
+                    history=(),
+                    status=401,
+                    message=f'Authentication failed: {json_response}',
+                )
+
+            if 'sessionKey' in json_response:
+                self.session.headers['X-Session-Key'] = str(json_response['sessionKey'])
+            if 'sessionTimeout' in json_response:
+                self.session_timeout = json_response['sessionTimeout']
 
             return json_response
 

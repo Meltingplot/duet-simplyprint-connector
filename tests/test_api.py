@@ -246,3 +246,13 @@ async def test_unified_move(reprapfirmware, mock_session):
         'http://10.42.0.2/rr_move',
         params={'old': 'old.txt', 'new': 'new.txt', 'deleteexisting': 'yes'},
     )
+
+
+@pytest.mark.asyncio
+async def test_reconnect_raises_on_auth_failure(mock_session):
+    mock_session.get.return_value.__aenter__.return_value.json = AsyncMock(
+        return_value={'err': 1},
+    )
+    rrf = RepRapFirmware(session=mock_session)
+    with pytest.raises(aiohttp.ClientResponseError, match='Authentication failed'):
+        await rrf.reconnect()
