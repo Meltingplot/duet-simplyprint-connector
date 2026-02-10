@@ -165,7 +165,7 @@ class DuetPrinter():
             )
             self.api.session = None  # Prevent session close
             self.api = dsf_api
-            await self.api.connect() # Establish DSF connection with session key
+            await self.api.connect()  # Establish DSF session key for WebSocket auth
             self.api.callbacks[503] = self._http_503_callback
         result = await self._fetch_full_status()
         self.om = result['result'] if 'result' in result else result
