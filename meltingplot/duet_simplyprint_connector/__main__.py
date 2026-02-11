@@ -13,7 +13,6 @@ from simplyprint_ws_client.core.settings import ClientSettings
 from simplyprint_ws_client.core.ws_protocol.connection import ConnectionMode
 from simplyprint_ws_client.shared.cli.cli import ClientCli
 from simplyprint_ws_client.shared.logging import setup_logging
-from simplyprint_ws_client.shared.sp.url_builder import SimplyPrintBackend
 
 from . import __version__
 from .camera import HttpCameraProtocol
