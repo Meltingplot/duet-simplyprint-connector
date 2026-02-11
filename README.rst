@@ -1,12 +1,20 @@
-Duet RepRapFirmware to Simplyprint.io connector
+Duet RepRapFirmware to SimplyPrint.io connector
 ================================================
 
-This package acts as a bridge between Duet-based 3D printers and the Simplyprint.io cloud service.
+This package acts as a bridge between Duet-based 3D printers and the SimplyPrint.io cloud service.
 
 It communicates with the printer using the Duet HTTP API.
 For more information, visit https://github.com/Duet3D/RepRapFirmware/wiki/HTTP-requests.
 
-Communication with Simplyprint.io is handled via the `simplyprint-ws-client`.
+Communication with SimplyPrint.io is handled via the `simplyprint-ws-client <https://pypi.org/project/simplyprint-ws-client/>`_.
+
+Camera support uses the ``simplyprint-ws-client`` camera system with an ``HttpCameraProtocol``
+that handles both single JPEG snapshot endpoints and multipart MJPEG streams.
+
+.. note::
+
+   SimplyPrint maintains an upstream version of this connector at
+   https://github.com/SimplyPrint/integration-duet3d.
 
 ------------
 Status
@@ -16,25 +24,25 @@ Supported features:
 
 - Printer registration
 - Printer status update
-- Webcam snapshot livestream
+- Webcam snapshots and MJPEG livestreaming via the ``simplyprint-ws-client`` camera pool
 - GCode receiving
 - File downloading
 - Printer control (start, pause, resume, cancel)
-- Self Upgrading VIA G-Code M997
-- Device healts update
+- Self upgrading via G-Code M997
+- Device health update
 - Bed leveling
-- Filament Sensor
+- Filament sensor
 - Duet auto discovery with tracking based on BoardID
-- Leave a cookie on the printer to identify the printer in the future (`0:/sys/simplyprint-connector.json`)
-- Grab the webcam url from DWC Settings file from the Printer
-- Allow Webcam URL to be an Snapshot Endpoint or MJPEG Stream
+- Leave a cookie on the printer to identify the printer in the future (``0:/sys/simplyprint-connector.json``)
+- Grab the webcam URL from DWC settings file from the printer
+- Webcam URL can be a snapshot endpoint or MJPEG stream
 
 Missing features:
 
 - PSU Control
-- GCode Macros / Scripts [not yet implemented by Simplyprint.io for Duet]
-- GCode terminal [not yet implemented by Simplyprint.io for Duet]
-- Receive messages from Printer in Simplyprint.io [not yet implemented by Simplyprint.io for Duet]
+- GCode Macros / Scripts [not yet implemented by SimplyPrint.io for Duet]
+- GCode terminal [not yet implemented by SimplyPrint.io for Duet]
+- Receive messages from Printer in SimplyPrint.io [not yet implemented by SimplyPrint.io for Duet]
 
 
 ------------
