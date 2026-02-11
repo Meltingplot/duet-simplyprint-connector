@@ -32,6 +32,7 @@ from simplyprint_ws_client.core.ws_protocol.messages import (
     GcodeDemandData,
     MeshDataMsg,
     PrinterSettingsMsg,
+    ResolveNotificationDemandData,
 )
 from simplyprint_ws_client.shared.camera.mixin import ClientCameraMixin
 from simplyprint_ws_client.shared.files.file_download import FileDownload
@@ -64,6 +65,8 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
 
     duet: DuetPrinter
     watchdog: Watchdog
+
+    _last_messagebox_seq: int = -1
 
     def __init__(self, *args, **kwargs) -> None:
         """Initialize the client."""
@@ -204,6 +207,7 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
             await self._update_job_info()
 
         await self._handle_heater_faults(old_om=old_om)
+        await self._handle_messagebox()
 
     @async_task
     async def _duet_printer_task(self):
@@ -314,6 +318,7 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
             'M190',
             'M220',
             'M221',
+            'M291',
             'M562',
             'M701',
             'M702',
@@ -521,6 +526,7 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
             self.printer.status = PrinterStatus.ERROR
 
             event_key = ("heater_fault", heater_idx)
+            self.logger.debug(f"Creating heater fault notification for heater {heater_idx}")
             event = self.printer.notifications.keyed(
                 event_key,
                 severity=NotificationEventSeverity.ERROR,
@@ -532,22 +538,147 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
                     actions={"reset": NotificationEventButtonAction(label="Reset fault")},
                 ),
             )
+            self.logger.debug(f"Heater fault notification created: event_id={event.event_id}")
             retained_events.append(event_key)
-
-            if not event._response_future:
-                self.event_loop.create_task(self._handle_heater_fault_response(event, heater_idx))
 
         self.printer.notifications.filter_retain_keys(
             lambda x: isinstance(x, tuple) and x[0] == "heater_fault",
             *retained_events,
         )
 
-    async def _handle_heater_fault_response(self, event, heater_idx) -> None:
-        """Wait for user response on a heater fault notification."""
-        response = await event.wait_for_response()
-        if response and response.action == "reset":
+    async def _handle_messagebox(self) -> None:
+        """Forward Duet M291 message boxes to SimplyPrint as notifications.
+
+        Supports M291 modes S0-S7:
+        S0: Non-blocking, no buttons
+        S1: Non-blocking, close button
+        S2: Blocking, OK button (M292 S{seq})
+        S3: Blocking, OK + Cancel (M292 S{seq} or M292 P1 S{seq})
+        S4: Blocking, custom choices (M292 P0 R{index} S{seq})
+        S5: Blocking, integer input (M292 P0 R{value} S{seq})
+        S6: Blocking, float input (M292 P0 R{value} S{seq})
+        S7: Blocking, string input (M292 P0 R"{value}" S{seq})
+        """
+        messagebox = self.duet.om.get('state', {}).get('messageBox', None)
+        retained_events = []
+
+        if messagebox is not None:
+            seq = messagebox.get('seq', -1)
+            event_key = ("messagebox", seq)
+            if seq != self._last_messagebox_seq:
+                self._last_messagebox_seq = seq
+
+                mode = messagebox.get('mode', 0)
+                title = messagebox.get('title', '') or 'Printer Message'
+                message = messagebox.get('message', '')
+                choices = messagebox.get('choices', None)
+                default = messagebox.get('default', None)
+
+                self.logger.debug(
+                    f"New message box: seq={seq} mode={mode} title={title!r}"
+                    f" message={message!r} choices={choices} default={default}",
+                )
+
+                actions = self._messagebox_actions(mode, choices, default)
+                # the UI for Warning and Error is not made for actions
+                severity = NotificationEventSeverity.ERROR if mode >= 2 else NotificationEventSeverity.INFO
+
+                self.logger.debug(f"Message box actions: {list(actions.keys())}")
+
+                event = self.printer.notifications.keyed(
+                    event_key,
+                    severity=severity,
+                    payload=NotificationEventPayload(
+                        title=title,
+                        message=message,
+                        actions=actions if actions else None,
+                        data={
+                            "mode": mode,
+                            "seq": seq,
+                            "default": default,
+                        },
+                    ),
+                )
+                self.logger.debug(f"Message box notification created: event_id={event.event_id}")
+            retained_events.append(event_key)
+
+        self.printer.notifications.filter_retain_keys(
+            lambda x: isinstance(x, tuple) and x[0] == "messagebox",
+            *retained_events,
+        )
+
+    @staticmethod
+    def _messagebox_actions(mode, choices, default):
+        """Build notification actions for a Duet M291 message box mode."""
+        actions = {}
+        if mode == 1:
+            actions["close"] = NotificationEventButtonAction(label="Close")
+        elif mode == 2:
+            actions["ok"] = NotificationEventButtonAction(label="OK")
+        elif mode == 3:
+            actions["ok"] = NotificationEventButtonAction(label="OK")
+            actions["cancel"] = NotificationEventButtonAction(label="Cancel")
+        elif mode == 4 and choices:
+            for idx, choice in enumerate(choices):
+                actions[f"choice_{idx}"] = NotificationEventButtonAction(label=choice)
+        elif mode in (5, 6) and default is not None:
+            actions["default"] = NotificationEventButtonAction(label=f"Use default ({default})")
+            actions["cancel"] = NotificationEventButtonAction(label="Cancel")
+        elif mode == 7 and default is not None:
+            actions["default"] = NotificationEventButtonAction(label=f'Use default ("{default}")')
+            actions["cancel"] = NotificationEventButtonAction(label="Cancel")
+        return actions
+
+    async def on_resolve_notification(self, data: ResolveNotificationDemandData) -> None:
+        """Handle notification responses from SimplyPrint.
+
+        Overrides the base DefaultClient handler to directly process
+        heater fault and messagebox responses instead of relying on
+        the wait_for_response() future mechanism.
+        """
+        self.logger.debug(
+            f"Received resolve_notification: event_id={data.event_id} action={data.action}",
+        )
+
+        event = self.printer.notifications.notifications.get(data.event_id)
+        if event is None:
+            self.logger.warning(f"No notification event found for event_id={data.event_id}")
+            return
+
+        payload_data = event.payload.data or {}
+
+        # Handle heater fault response
+        if "heater" in payload_data and data.action == "reset":
+            heater_idx = payload_data["heater"]
             self.logger.info(f"Resetting heater {heater_idx} fault via user request")
             await self.duet.gcode(f"M562 P{heater_idx}")
+            return
+
+        # Handle messagebox response
+        if "mode" in payload_data:
+            mode = payload_data["mode"]
+            seq = payload_data.get("seq")
+            default = payload_data.get("default")
+
+            if data.action == "cancel":
+                self.logger.info(f"Message box cancelled by user, sending M292 P1 S{seq}")
+                await self.duet.gcode(f"M292 P1 S{seq}")
+            elif mode == 4 and data.action.startswith("choice_"):
+                choice_idx = data.action.split("_", 1)[1]
+                self.logger.info(f"Message box choice {choice_idx} selected, sending M292 P0 R{choice_idx} S{seq}")
+                await self.duet.gcode(f"M292 P0 R{{{choice_idx}}} S{seq}")
+            elif mode in (5, 6) and data.action == "default":
+                self.logger.info(f"Message box default {default} accepted, sending M292 P0 R{default} S{seq}")
+                await self.duet.gcode(f"M292 P0 R{{{default}}} S{seq}")
+            elif mode == 7 and data.action == "default":
+                self.logger.info(
+                    f'Message box default "{default}" accepted, sending M292 P0 R"{default}" S{seq}',
+                )
+                await self.duet.gcode(f'M292 P0 R{{"{default}"}} S{seq}')
+            else:
+                self.logger.info(f"Message box acknowledged, sending M292 S{seq}")
+                await self.duet.gcode(f"M292 S{seq}")
+            return
 
     async def _update_temperatures(self) -> None:
         """Update the printer temperatures."""
