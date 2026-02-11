@@ -533,16 +533,8 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
         self.printer.ambient_temperature.ambient = 20
 
     async def _check_and_set_cookie(self) -> None:
-        """Check if the cookie is set and set it if it is not."""
-        self.logger.debug('Checking if cookie is set')
-        try:
-            async for _ in self.duet.download(filepath='0:/sys/simplyprint-connector.json'):
-                break
-            await asyncio.sleep(1)
-            await self.duet.delete(filepath='0:/sys/simplyprint-connector.json')
-        except aiohttp.client_exceptions.ClientResponseError:
-            self.logger.debug('Cookie not set, setting cookie')
-
+        """Write the connector cookie to the printer."""
+        self.logger.debug('Setting connector cookie')
         cookie_data = {
             'hostname': self.printer.info.hostname,
             'ip': self.printer.info.local_ip,
