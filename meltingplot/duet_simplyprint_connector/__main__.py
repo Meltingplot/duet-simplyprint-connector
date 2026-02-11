@@ -1,11 +1,11 @@
 """Main entry point for the Duet SimplyPrint connector."""
 import ipaddress
 import logging
+import math
 import socket
 from urllib.parse import urlparse
 
 import click
-import PIL  # noqa
 from simplyprint_ws_client.core.app import ClientApp
 from simplyprint_ws_client.core.config import ConfigManagerType
 from simplyprint_ws_client.core.settings import ClientSettings
@@ -15,6 +15,7 @@ from simplyprint_ws_client.shared.logging import setup_logging
 from simplyprint_ws_client.shared.sp.url_builder import SimplyPrintBackend
 
 from . import __version__
+from .camera import HttpCameraProtocol
 from .cli.autodiscover import AutoDiscover
 from .cli.install import install_as_service
 from .virtual_client import VirtualClient, VirtualConfig
@@ -105,6 +106,9 @@ def main():
     watchdog = Watchdog(timeout=300)
     VirtualClient.watchdog = watchdog
 
+    config_manager = ConfigManagerType.JSON(name="DuetConnector", config_t=VirtualConfig)
+    camera_workers = max(1, math.ceil(len(config_manager) / 10))
+
     settings = ClientSettings(
         name="DuetConnector",
         version=__version__,
@@ -114,12 +118,13 @@ def main():
         allow_setup=True,
         config_manager_t=ConfigManagerType.JSON,
         backend=SimplyPrintBackend.PRODUCTION,
-        development=False,
+        development=True,
+        camera_workers=camera_workers,
+        camera_protocols=[HttpCameraProtocol],
     )
 
     setup_logging(settings)
     logging.getLogger().setLevel(logging.INFO)
-    logging.getLogger("PIL").setLevel(logging.INFO)
     logging.getLogger("aiohttp.client").setLevel(logging.INFO)
 
     app = ClientApp(settings)

@@ -25,10 +25,11 @@ from simplyprint_ws_client.core.ws_protocol.messages import (
     GcodeDemandData,
     MeshDataMsg,
     PrinterSettingsMsg,
-    WebcamSnapshotDemandData,
 )
+from simplyprint_ws_client.shared.camera.mixin import ClientCameraMixin
 from simplyprint_ws_client.shared.files.file_download import FileDownload
 from simplyprint_ws_client.shared.hardware.physical_machine import PhysicalMachine
+from yarl import URL
 
 from . import __version__
 from .duet.api import RepRapFirmware
@@ -38,7 +39,6 @@ from .network import get_local_ip_and_mac
 from .state import map_duet_state_to_printer_status
 from .task import async_supress, async_task
 from .watchdog import Watchdog
-from .webcam import Webcam
 
 
 @dataclass
@@ -52,16 +52,16 @@ class VirtualConfig(PrinterConfig):
     webcam_uri: Optional[str] = None
 
 
-class VirtualClient(DefaultClient[VirtualConfig]):
+class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfig]):
     """A Websocket client for the SimplyPrint.io Service."""
 
     duet: DuetPrinter
     watchdog: Watchdog
-    _webcam: Webcam
 
     def __init__(self, *args, **kwargs) -> None:
         """Initialize the client."""
         super().__init__(*args, **kwargs)
+        self.initialize_camera_mixin(**kwargs)
 
     async def init(self) -> None:
         """Initialize the client."""
@@ -69,7 +69,8 @@ class VirtualClient(DefaultClient[VirtualConfig]):
 
         try:
             await self._initialize_tasks()
-            self._webcam = Webcam(client=self, uri=self.config.webcam_uri)
+            if self.config.webcam_uri:
+                self.camera_uri = URL(self.config.webcam_uri)
             await self._initialize_printer_info()
             await self._initialize_duet()
         except Exception as e:
@@ -145,10 +146,6 @@ class VirtualClient(DefaultClient[VirtualConfig]):
     async def _duet_on_state(self, old_state) -> None:
         """Handle State changes."""
         self.logger.debug(f"Duet state changed from {old_state} to {self.duet.state}")
-
-        # send a snapshot without request to get in sync with SP
-        # TODO: remove this when it is fixed in SP
-        await self._webcam.request_snapshot()
 
     async def _set_duet_unique_id(self, board: dict) -> None:
         """Set the unique ID if it is not set and emit an event to notify the client."""
@@ -249,8 +246,6 @@ class VirtualClient(DefaultClient[VirtualConfig]):
 
         await self._duet_printer_task()
         await self._connector_status_task()
-        # send first snapshot without request
-        await self._webcam.request_snapshot()
 
     async def on_remove_connection(self, _) -> None:
         """Remove the connection."""
@@ -725,22 +720,6 @@ class VirtualClient(DefaultClient[VirtualConfig]):
 
     async def teardown(self) -> None:
         """Teardown the client."""
-        pass
-
-    async def on_webcam_test(self) -> None:
-        """Test the webcam."""
-        await self._webcam.request_snapshot()
-        self.printer.webcam_info.connected = (True if self.config.webcam_uri is not None else False)
-
-    async def on_webcam_snapshot(
-        self,
-        event: WebcamSnapshotDemandData,
-    ) -> None:
-        """Take a snapshot from the webcam."""
-        await self._webcam.request_snapshot(snapshot_id=event.id, endpoint=event.endpoint)
-
-    async def on_stream_off(self) -> None:
-        """Turn off the webcam stream."""
         pass
 
     async def on_api_restart(self) -> None:

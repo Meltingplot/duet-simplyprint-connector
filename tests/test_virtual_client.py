@@ -24,7 +24,8 @@ def virtual_client():
         duet_unique_id="unique_id",
         webcam_uri="http://webcam.example.com"
     )
-    client = VirtualClient(config=config)
+    with patch.object(VirtualClient, 'initialize_camera_mixin'):
+        client = VirtualClient(config=config)
     return client
 
 @pytest.mark.skip
