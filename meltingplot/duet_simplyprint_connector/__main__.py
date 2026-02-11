@@ -6,6 +6,7 @@ import socket
 from urllib.parse import urlparse
 
 import click
+from simplyprint_ws_client.const import IS_TESTING
 from simplyprint_ws_client.core.app import ClientApp
 from simplyprint_ws_client.core.config import ConfigManagerType
 from simplyprint_ws_client.core.settings import ClientSettings
@@ -117,15 +118,12 @@ def main():
         config_factory=VirtualConfig,
         allow_setup=True,
         config_manager_t=ConfigManagerType.JSON,
-        backend=SimplyPrintBackend.PRODUCTION,
-        development=True,
+        development=IS_TESTING,
         camera_workers=camera_workers,
         camera_protocols=[HttpCameraProtocol],
     )
 
     setup_logging(settings)
-    logging.getLogger().setLevel(logging.INFO)
-    logging.getLogger("aiohttp.client").setLevel(logging.INFO)
 
     app = ClientApp(settings)
     cli = ClientCli(app)
