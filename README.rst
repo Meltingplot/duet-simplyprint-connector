@@ -6,6 +6,8 @@ This package acts as a bridge between Duet-based 3D printers and the SimplyPrint
 It communicates with the printer using the Duet HTTP API.
 For more information, visit https://github.com/Duet3D/RepRapFirmware/wiki/HTTP-requests.
 
+**Minimum supported RepRapFirmware version: 3.5.4**
+
 Communication with SimplyPrint.io is handled via the `simplyprint-ws-client <https://pypi.org/project/simplyprint-ws-client/>`_.
 
 Camera support uses the ``simplyprint-ws-client`` camera system with an ``HttpCameraProtocol``

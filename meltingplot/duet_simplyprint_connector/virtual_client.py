@@ -588,19 +588,22 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
         retained_events = []
 
         if messagebox is not None:
-            seq = messagebox.get('seq', -1)
-            event_key = ("messagebox", seq)
-            if seq != self._last_messagebox_seq:
-                self._last_messagebox_seq = seq
+            raw_seq = messagebox.get('seq', None)
+            mode = messagebox.get('mode', 0)
+            title = messagebox.get('title', '') or 'Printer Message'
+            message = messagebox.get('message', '')
+            choices = messagebox.get('choices', None)
+            default = messagebox.get('default', None)
 
-                mode = messagebox.get('mode', 0)
-                title = messagebox.get('title', '') or 'Printer Message'
-                message = messagebox.get('message', '')
-                choices = messagebox.get('choices', None)
-                default = messagebox.get('default', None)
+            # RRF < 3.5 does not provide seq; use content hash for deduplication.
+            dedup_key = raw_seq if raw_seq is not None else hash((mode, title, message))
+            event_key = ("messagebox", dedup_key)
+
+            if dedup_key != self._last_messagebox_seq:
+                self._last_messagebox_seq = dedup_key
 
                 self.logger.debug(
-                    f"New message box: seq={seq} mode={mode} title={title!r}"
+                    f"New message box: seq={raw_seq} mode={mode} title={title!r}"
                     f" message={message!r} choices={choices} default={default}",
                 )
 
@@ -619,7 +622,7 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
                         actions=actions if actions else None,
                         data={
                             "mode": mode,
-                            "seq": seq,
+                            "seq": raw_seq,
                             "default": default,
                         },
                     ),
@@ -682,27 +685,31 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
         # Handle messagebox response
         if "mode" in payload_data:
             mode = payload_data["mode"]
-            seq = payload_data.get("seq")
+            raw_seq = payload_data.get("seq")
             default = payload_data.get("default")
+            seq_param = f" S{raw_seq}" if raw_seq is not None else ""
 
             if data.action == "cancel":
-                self.logger.info(f"Message box cancelled by user, sending M292 P1 S{seq}")
-                await self.duet.gcode(f"M292 P1 S{seq}")
+                cmd = f"M292 P1{seq_param}"
+                self.logger.info(f"Message box cancelled by user, sending {cmd}")
+                await self.duet.gcode(cmd)
             elif mode == 4 and data.action.startswith("choice_"):
                 choice_idx = data.action.split("_", 1)[1]
-                self.logger.info(f"Message box choice {choice_idx} selected, sending M292 P0 R{choice_idx} S{seq}")
-                await self.duet.gcode(f"M292 P0 R{{{choice_idx}}} S{seq}")
+                cmd = f"M292 P0 R{{{choice_idx}}}{seq_param}"
+                self.logger.info(f"Message box choice {choice_idx} selected, sending {cmd}")
+                await self.duet.gcode(cmd)
             elif mode in (5, 6) and data.action == "default":
-                self.logger.info(f"Message box default {default} accepted, sending M292 P0 R{default} S{seq}")
-                await self.duet.gcode(f"M292 P0 R{{{default}}} S{seq}")
+                cmd = f"M292 P0 R{{{default}}}{seq_param}"
+                self.logger.info(f"Message box default {default} accepted, sending {cmd}")
+                await self.duet.gcode(cmd)
             elif mode == 7 and data.action == "default":
-                self.logger.info(
-                    f'Message box default "{default}" accepted, sending M292 P0 R"{default}" S{seq}',
-                )
-                await self.duet.gcode(f'M292 P0 R{{"{default}"}} S{seq}')
+                cmd = f'M292 P0 R{{"{default}"}}{seq_param}'
+                self.logger.info(f'Message box default "{default}" accepted, sending {cmd}')
+                await self.duet.gcode(cmd)
             else:
-                self.logger.info(f"Message box acknowledged, sending M292 S{seq}")
-                await self.duet.gcode(f"M292 S{seq}")
+                cmd = f"M292{seq_param}"
+                self.logger.info(f"Message box acknowledged, sending {cmd}")
+                await self.duet.gcode(cmd)
             return
 
     async def _update_temperatures(self) -> None:
