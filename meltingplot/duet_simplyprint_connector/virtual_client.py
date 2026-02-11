@@ -19,7 +19,14 @@ import psutil
 from simplyprint_ws_client.const import VERSION as SP_VERSION
 from simplyprint_ws_client.core.client import ClientConfigChangedEvent, DefaultClient
 from simplyprint_ws_client.core.config import PrinterConfig
-from simplyprint_ws_client.core.state import FilamentSensorEnum, FileProgressStateEnum, PrinterStatus
+from simplyprint_ws_client.core.state import (
+    FilamentSensorEnum,
+    FileProgressStateEnum,
+    NotificationEventPayload,
+    NotificationEventSeverity,
+    PrinterStatus,
+)
+from simplyprint_ws_client.core.state.models import NotificationEventButtonAction
 from simplyprint_ws_client.core.ws_protocol.messages import (
     FileDemandData,
     GcodeDemandData,
@@ -502,18 +509,45 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
         await self.duet.gcode('M0')
 
     async def _handle_heater_faults(self, old_om) -> None:
-        """Handle heater faults."""
+        """Handle heater faults and send notifications to SimplyPrint."""
         heaters = self.duet.om.get('heat', {}).get('heaters', [])
-        old_heaters = old_om.get('heat', {}).get('heaters', []) if old_om else []
-        for idx, heater in enumerate(heaters):
-            if heater['state'] == 'fault' and (
-                len(old_heaters) != len(heaters)
-                or idx <= len(old_heaters) and old_heaters[idx].get('state') != 'fault'
-            ):
-                self.logger.error(f"Heater {idx} is in fault state")
-                self.printer.status = PrinterStatus.ERROR
-                # TODO: notify SP about the error
-                # reset the error with f"M562 P{idx}"
+        retained_events = []
+
+        for heater_idx, heater in enumerate(heaters):
+            if heater['state'] != 'fault':
+                continue
+
+            self.logger.error(f"Heater {heater_idx} is in fault state")
+            self.printer.status = PrinterStatus.ERROR
+
+            event_key = ("heater_fault", heater_idx)
+            event = self.printer.notifications.keyed(
+                event_key,
+                severity=NotificationEventSeverity.ERROR,
+                payload=NotificationEventPayload(
+                    title="Heater Fault",
+                    message=f"Heater fault on heater {heater_idx}."
+                    " Only clear the fault if you are sure it is safe!",
+                    data={"heater": heater_idx},
+                    actions={"reset": NotificationEventButtonAction(label="Reset fault")},
+                ),
+            )
+            retained_events.append(event_key)
+
+            if not event._response_future:
+                self.event_loop.create_task(self._handle_heater_fault_response(event, heater_idx))
+
+        self.printer.notifications.filter_retain_keys(
+            lambda x: isinstance(x, tuple) and x[0] == "heater_fault",
+            *retained_events,
+        )
+
+    async def _handle_heater_fault_response(self, event, heater_idx) -> None:
+        """Wait for user response on a heater fault notification."""
+        response = await event.wait_for_response()
+        if response and response.action == "reset":
+            self.logger.info(f"Resetting heater {heater_idx} fault via user request")
+            await self.duet.gcode(f"M562 P{heater_idx}")
 
     async def _update_temperatures(self) -> None:
         """Update the printer temperatures."""

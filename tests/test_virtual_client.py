@@ -153,13 +153,13 @@ def test_merge(source, destination, expected):
     assert result == expected
 
 @pytest.mark.asyncio
-async def test_handle_heater_faults_sets_error_status_on_new_fault(virtual_client):
+async def test_handle_heater_faults_sets_error_and_creates_notification(virtual_client):
     # Arrange
     virtual_client.logger = Mock()
     virtual_client.printer = Mock()
     virtual_client.printer.status = PrinterStatus.OPERATIONAL
+    virtual_client.event_loop = asyncio.get_event_loop()
 
-    # Simulate duet.om with heaters, one in 'fault' state
     virtual_client.duet = Mock()
     virtual_client.duet.om = {
         'heat': {
@@ -170,25 +170,18 @@ async def test_handle_heater_faults_sets_error_status_on_new_fault(virtual_clien
         }
     }
 
-    # old_om: previous state, no faults
-    old_om = {
-        'heat': {
-            'heaters': [
-                {'state': 'active'},
-                {'state': 'active'},
-            ]
-        }
-    }
-
     # Act
-    await virtual_client._handle_heater_faults(old_om)
+    await virtual_client._handle_heater_faults(old_om=None)
 
     # Assert
     assert virtual_client.printer.status == PrinterStatus.ERROR
     virtual_client.logger.error.assert_called_with("Heater 0 is in fault state")
+    virtual_client.printer.notifications.keyed.assert_called_once()
+    call_args = virtual_client.printer.notifications.keyed.call_args
+    assert call_args[0][0] == ("heater_fault", 0)
 
 @pytest.mark.asyncio
-async def test_handle_heater_faults_no_error_if_fault_already_present(virtual_client):
+async def test_handle_heater_faults_no_notification_if_no_faults(virtual_client):
     # Arrange
     virtual_client.logger = Mock()
     virtual_client.printer = Mock()
@@ -198,52 +191,44 @@ async def test_handle_heater_faults_no_error_if_fault_already_present(virtual_cl
     virtual_client.duet.om = {
         'heat': {
             'heaters': [
-                {'state': 'fault'},
                 {'state': 'active'},
-            ]
-        }
-    }
-
-    # old_om: previous state, already in fault
-    old_om = {
-        'heat': {
-            'heaters': [
-                {'state': 'fault'},
                 {'state': 'active'},
             ]
         }
     }
 
     # Act
-    await virtual_client._handle_heater_faults(old_om)
+    await virtual_client._handle_heater_faults(old_om=None)
 
     # Assert
-    # Should not set error again or log error
     assert virtual_client.printer.status == PrinterStatus.OPERATIONAL
-    virtual_client.logger.error.assert_not_called()
+    virtual_client.printer.notifications.keyed.assert_not_called()
 
 @pytest.mark.asyncio
-async def test_handle_heater_faults_handles_missing_old_om(virtual_client):
+async def test_handle_heater_faults_retains_only_active_faults(virtual_client):
     # Arrange
     virtual_client.logger = Mock()
     virtual_client.printer = Mock()
     virtual_client.printer.status = PrinterStatus.OPERATIONAL
+    virtual_client.event_loop = asyncio.get_event_loop()
 
     virtual_client.duet = Mock()
     virtual_client.duet.om = {
         'heat': {
             'heaters': [
                 {'state': 'fault'},
+                {'state': 'active'},
+                {'state': 'fault'},
             ]
         }
     }
 
-    # old_om is None
-    old_om = None
-
     # Act
-    await virtual_client._handle_heater_faults(old_om)
+    await virtual_client._handle_heater_faults(old_om=None)
 
     # Assert
-    assert virtual_client.printer.status == PrinterStatus.ERROR
-    virtual_client.logger.error.assert_called_with("Heater 0 is in fault state")
+    assert virtual_client.printer.notifications.keyed.call_count == 2
+    virtual_client.printer.notifications.filter_retain_keys.assert_called_once()
+    call_args = virtual_client.printer.notifications.filter_retain_keys.call_args
+    assert ("heater_fault", 0) in call_args[0][1:]
+    assert ("heater_fault", 2) in call_args[0][1:]
