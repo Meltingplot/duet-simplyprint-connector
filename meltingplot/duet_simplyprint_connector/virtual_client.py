@@ -33,6 +33,7 @@ from simplyprint_ws_client.core.ws_protocol.messages import (
     MeshDataMsg,
     PrinterSettingsMsg,
     ResolveNotificationDemandData,
+    SkipObjectsDemandData,
 )
 from simplyprint_ws_client.shared.camera.mixin import ClientCameraMixin
 from simplyprint_ws_client.shared.files.file_download import FileDownload
@@ -485,6 +486,12 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
         if event.auto_start:
             await self._auto_start_file(event.file_name)
 
+        skip_objects = getattr(event, 'skip_objects', None)
+        if skip_objects:
+            self.logger.info(f"Pre-skipping objects from file demand: {skip_objects}")
+            for obj_id in skip_objects:
+                await self.duet.gcode(f"M486 P{obj_id}")
+
         self.printer.file_progress.percent = 100.0
         self.printer.file_progress.state = FileProgressStateEnum.READY
 
@@ -512,6 +519,24 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
         """Cancel the print job."""
         await self.duet.gcode('M25')
         await self.duet.gcode('M0')
+
+    async def on_skip_objects(self, data: SkipObjectsDemandData) -> None:
+        """Skip (cancel) objects during a print via M486."""
+        self.logger.info(f"Skipping objects: {data.objects}")
+        for obj_id in data.objects:
+            await self.duet.gcode(f"M486 P{obj_id}")
+
+    def _update_skipped_objects(self, job_status: dict) -> None:
+        """Report build object state back to SimplyPrint."""
+        build = job_status.get('build', {})
+        build_objects = build.get('objects', [])
+
+        current_object = build.get('currentObject', None)
+        if current_object is not None and current_object >= 0:
+            self.printer.job_info.object = current_object
+
+        skipped = [idx for idx, obj in enumerate(build_objects) if obj.get('cancelled', False)]
+        self.printer.job_info.skipped_objects = skipped
 
     async def _handle_heater_faults(self, old_om) -> None:
         """Handle heater faults and send notifications to SimplyPrint."""
@@ -825,6 +850,7 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
         await self._update_job_times_left(job_status)
         await self._update_job_filename(job_status)
         await self._update_job_layer(job_status)
+        self._update_skipped_objects(job_status)
 
     async def _update_job_progress(self, job_status: dict) -> None:
         try:

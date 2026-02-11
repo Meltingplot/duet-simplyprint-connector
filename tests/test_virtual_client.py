@@ -8,7 +8,7 @@ import aiohttp
 import pytest
 
 from .context import FileProgressStateEnum, VirtualClient, VirtualConfig
-from simplyprint_ws_client.core.ws_protocol.messages import FileDemandData
+from simplyprint_ws_client.core.ws_protocol.messages import FileDemandData, SkipObjectsDemandData
 from simplyprint_ws_client.core.state import PrinterStatus
 from meltingplot.duet_simplyprint_connector.duet.model import merge_dictionary
 
@@ -232,3 +232,81 @@ async def test_handle_heater_faults_retains_only_active_faults(virtual_client):
     call_args = virtual_client.printer.notifications.filter_retain_keys.call_args
     assert ("heater_fault", 0) in call_args[0][1:]
     assert ("heater_fault", 2) in call_args[0][1:]
+
+
+@pytest.mark.asyncio
+async def test_on_skip_objects_sends_m486_for_each_object(virtual_client):
+    """Test that on_skip_objects sends M486 P{id} for each object."""
+    virtual_client.logger = Mock()
+    virtual_client.duet = AsyncMock()
+
+    data = SkipObjectsDemandData(objects=[0, 2, 5])
+
+    await virtual_client.on_skip_objects(data)
+
+    assert virtual_client.duet.gcode.call_count == 3
+    virtual_client.duet.gcode.assert_any_call("M486 P0")
+    virtual_client.duet.gcode.assert_any_call("M486 P2")
+    virtual_client.duet.gcode.assert_any_call("M486 P5")
+
+
+@pytest.mark.asyncio
+async def test_on_skip_objects_empty_list(virtual_client):
+    """Test that on_skip_objects does nothing with an empty list."""
+    virtual_client.logger = Mock()
+    virtual_client.duet = AsyncMock()
+
+    data = SkipObjectsDemandData(objects=[])
+
+    await virtual_client.on_skip_objects(data)
+
+    virtual_client.duet.gcode.assert_not_called()
+
+
+def test_update_skipped_objects_reports_cancelled(virtual_client):
+    """Test that _update_skipped_objects reports cancelled objects."""
+    virtual_client.printer = Mock()
+    job_status = {
+        'build': {
+            'currentObject': 1,
+            'objects': [
+                {'cancelled': True, 'name': 'object_0'},
+                {'cancelled': False, 'name': 'object_1'},
+                {'cancelled': True, 'name': 'object_2'},
+            ],
+        },
+    }
+
+    virtual_client._update_skipped_objects(job_status)
+
+    assert virtual_client.printer.job_info.skipped_objects == [0, 2]
+    assert virtual_client.printer.job_info.object == 1
+
+
+def test_update_skipped_objects_no_cancelled(virtual_client):
+    """Test that _update_skipped_objects reports empty list when none cancelled."""
+    virtual_client.printer = Mock()
+    job_status = {
+        'build': {
+            'currentObject': 0,
+            'objects': [
+                {'cancelled': False, 'name': 'object_0'},
+                {'cancelled': False, 'name': 'object_1'},
+            ],
+        },
+    }
+
+    virtual_client._update_skipped_objects(job_status)
+
+    assert virtual_client.printer.job_info.skipped_objects == []
+    assert virtual_client.printer.job_info.object == 0
+
+
+def test_update_skipped_objects_no_build_data(virtual_client):
+    """Test that _update_skipped_objects handles missing build data."""
+    virtual_client.printer = Mock()
+    job_status = {}
+
+    virtual_client._update_skipped_objects(job_status)
+
+    assert virtual_client.printer.job_info.skipped_objects == []
