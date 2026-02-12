@@ -66,7 +66,7 @@ def run_app(autodiscover, app, profile, watchdog: Watchdog):
 
     try:
         for network, pwd in networks.items():
-            click.echo(f"Scanning existing network: {network} with password {pwd}")
+            click.echo(f"Scanning existing network: {network} with password {pwd[:2]}{'*' * (len(pwd) - 2)}")
             if ':' in network:
                 autodiscover._autodiscover(password=pwd, ipv6_range=network, ipv4_range='127.0.0.1/32')
             else:

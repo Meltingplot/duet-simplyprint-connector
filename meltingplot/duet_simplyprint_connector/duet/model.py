@@ -145,7 +145,10 @@ class DuetPrinter():
         """Track the state of the printer."""
         if old_om is None:
             return
-        old_state = DuetState(old_om['state']['status'])
+        try:
+            old_state = DuetState(old_om['state']['status'])
+        except (KeyError, TypeError, ValueError):
+            return
         if self.state != old_state:
             self.logger.debug(f"State change: {old_state} -> {self.state}")
             self.events.emit(DuetModelEvents.state, old_state)

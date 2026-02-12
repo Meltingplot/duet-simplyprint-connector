@@ -416,10 +416,7 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
         else:
             raise TimeoutError('Timeout while waiting for file to be ready')
 
-        asyncio.run_coroutine_threadsafe(
-            self.on_start_print(None),
-            self.event_loop,
-        )
+        asyncio.create_task(self.on_start_print(None))
 
     @async_task
     async def _fileprogress_task(self) -> None:
@@ -814,10 +811,17 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
         )
 
     async def _update_cpu_and_memory_info(self) -> None:
-        self.printer.cpu_info.usage = psutil.cpu_percent(interval=1)
+        loop = asyncio.get_running_loop()
+        self.printer.cpu_info.usage = await loop.run_in_executor(None, psutil.cpu_percent, 1)
         try:
-            self.printer.cpu_info.temp = psutil.sensors_temperatures()['coretemp'][0].current
-        except KeyError:
+            temps = psutil.sensors_temperatures()
+            for key in ('coretemp', 'cpu_thermal', 'k10temp', 'zenpower'):
+                if key in temps and temps[key]:
+                    self.printer.cpu_info.temp = temps[key][0].current
+                    break
+            else:
+                self.printer.cpu_info.temp = 0.0
+        except (KeyError, AttributeError, IndexError):
             self.printer.cpu_info.temp = 0.0
         self.printer.cpu_info.memory = psutil.virtual_memory().percent
 
