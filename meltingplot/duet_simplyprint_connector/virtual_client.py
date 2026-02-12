@@ -22,6 +22,7 @@ from simplyprint_ws_client.core.config import PrinterConfig
 from simplyprint_ws_client.core.state import (
     FilamentSensorEnum,
     FileProgressStateEnum,
+    JobObjectEntry,
     NotificationEventPayload,
     NotificationEventSeverity,
     PrinterStatus,
@@ -31,6 +32,7 @@ from simplyprint_ws_client.core.ws_protocol.messages import (
     FileDemandData,
     GcodeDemandData,
     MeshDataMsg,
+    ObjectsMsg,
     PrinterSettingsMsg,
     ResolveNotificationDemandData,
     SkipObjectsDemandData,
@@ -68,6 +70,7 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
     watchdog: Watchdog
 
     _last_messagebox_seq: int = -1
+    _last_build_objects: list = None
 
     def __init__(self, *args, **kwargs) -> None:
         """Initialize the client."""
@@ -532,7 +535,7 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
         for obj_id in data.objects:
             await self.duet.gcode(f"M486 P{obj_id}")
 
-    def _update_skipped_objects(self, job_status: dict) -> None:
+    async def _update_skipped_objects(self, job_status: dict) -> None:
         """Report build object state back to SimplyPrint."""
         build = job_status.get('build', {})
         build_objects = build.get('objects', [])
@@ -543,6 +546,38 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
 
         skipped = [idx for idx, obj in enumerate(build_objects) if obj.get('cancelled', False)]
         self.printer.job_info.skipped_objects = skipped
+
+        await self._send_build_objects(build_objects)
+
+    async def _send_build_objects(self, build_objects: list) -> None:
+        """Send build object definitions to SimplyPrint via ObjectsMsg.
+
+        Only sends when the object list has changed since the last call.
+        """
+        if not build_objects:
+            return
+
+        if build_objects == self._last_build_objects:
+            return
+
+        self._last_build_objects = [dict(obj) for obj in build_objects]
+
+        entries = []
+        for idx, obj in enumerate(build_objects):
+            entry = JobObjectEntry(id=idx, name=obj.get('name'))
+
+            x_bounds = obj.get('x')
+            y_bounds = obj.get('y')
+            if x_bounds and y_bounds:
+                entry.bbox = [x_bounds[0], y_bounds[0], x_bounds[1], y_bounds[1]]
+                entry.center = [
+                    (x_bounds[0] + x_bounds[1]) / 2.0,
+                    (y_bounds[0] + y_bounds[1]) / 2.0,
+                ]
+
+            entries.append(entry)
+
+        await self.send(ObjectsMsg(data={"objects": entries}))
 
     async def _handle_heater_faults(self, old_om) -> None:
         """Handle heater faults and send notifications to SimplyPrint."""
@@ -801,6 +836,7 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
         """Mark the current job as finished."""
         self.printer.job_info.finished = True
         self.printer.job_info.progress = 100.0
+        self._last_build_objects = None
 
     @async_task
     async def _connector_status_task(self) -> None:
@@ -863,7 +899,7 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
         await self._update_job_times_left(job_status)
         await self._update_job_filename(job_status)
         await self._update_job_layer(job_status)
-        self._update_skipped_objects(job_status)
+        await self._update_skipped_objects(job_status)
 
     async def _update_job_progress(self, job_status: dict) -> None:
         try:

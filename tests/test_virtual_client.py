@@ -263,9 +263,11 @@ async def test_on_skip_objects_empty_list(virtual_client):
     virtual_client.duet.gcode.assert_not_called()
 
 
-def test_update_skipped_objects_reports_cancelled(virtual_client):
+@pytest.mark.asyncio
+async def test_update_skipped_objects_reports_cancelled(virtual_client):
     """Test that _update_skipped_objects reports cancelled objects."""
     virtual_client.printer = Mock()
+    virtual_client.send = AsyncMock()
     job_status = {
         'build': {
             'currentObject': 1,
@@ -277,15 +279,17 @@ def test_update_skipped_objects_reports_cancelled(virtual_client):
         },
     }
 
-    virtual_client._update_skipped_objects(job_status)
+    await virtual_client._update_skipped_objects(job_status)
 
     assert virtual_client.printer.job_info.skipped_objects == [0, 2]
     assert virtual_client.printer.job_info.object == 1
 
 
-def test_update_skipped_objects_no_cancelled(virtual_client):
+@pytest.mark.asyncio
+async def test_update_skipped_objects_no_cancelled(virtual_client):
     """Test that _update_skipped_objects reports empty list when none cancelled."""
     virtual_client.printer = Mock()
+    virtual_client.send = AsyncMock()
     job_status = {
         'build': {
             'currentObject': 0,
@@ -296,17 +300,41 @@ def test_update_skipped_objects_no_cancelled(virtual_client):
         },
     }
 
-    virtual_client._update_skipped_objects(job_status)
+    await virtual_client._update_skipped_objects(job_status)
 
     assert virtual_client.printer.job_info.skipped_objects == []
     assert virtual_client.printer.job_info.object == 0
 
 
-def test_update_skipped_objects_no_build_data(virtual_client):
+@pytest.mark.asyncio
+async def test_update_skipped_objects_no_build_data(virtual_client):
     """Test that _update_skipped_objects handles missing build data."""
     virtual_client.printer = Mock()
+    virtual_client.send = AsyncMock()
     job_status = {}
 
-    virtual_client._update_skipped_objects(job_status)
+    await virtual_client._update_skipped_objects(job_status)
 
     assert virtual_client.printer.job_info.skipped_objects == []
+
+
+@pytest.mark.asyncio
+async def test_send_build_objects_only_on_change(virtual_client):
+    """Test that _send_build_objects only sends when objects change."""
+    virtual_client.send = AsyncMock()
+    build_objects = [
+        {'name': 'object_0', 'x': [0, 10], 'y': [0, 10]},
+        {'name': 'object_1', 'x': [20, 30], 'y': [20, 30]},
+    ]
+
+    await virtual_client._send_build_objects(build_objects)
+    assert virtual_client.send.call_count == 1
+
+    # Same objects again — should not send
+    await virtual_client._send_build_objects(build_objects)
+    assert virtual_client.send.call_count == 1
+
+    # Changed objects — should send
+    build_objects[0]['cancelled'] = True
+    await virtual_client._send_build_objects(build_objects)
+    assert virtual_client.send.call_count == 2
