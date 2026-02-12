@@ -13,12 +13,6 @@ import attr
 from .base import DuetAPIBase, reauthenticate
 
 
-class DSFAuthenticationError(Exception):
-    """DSF Authentication Error."""
-
-    pass
-
-
 @attr.s
 class DuetSoftwareFramework(DuetAPIBase):
     """Duet Software Framework (SBC mode) API Class."""
@@ -70,8 +64,6 @@ class DuetSoftwareFramework(DuetAPIBase):
                     json_response = await r.json()
                     if 'sessionKey' in json_response:
                         self.session.headers['X-Session-Key'] = str(json_response['sessionKey'])
-                elif r.status == 403:
-                    raise DSFAuthenticationError("Invalid password")
 
             return json_response
 

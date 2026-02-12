@@ -16,12 +16,17 @@ def mock_session():
     session.get.return_value.__aenter__.return_value.json = AsyncMock(return_value={'sessionKey': 'test-key'})
     session.get.return_value.__aenter__.return_value.status = 200
     session.get.return_value.__aenter__.return_value.text = AsyncMock(return_value='ok')
+    session.get.return_value.__aenter__.return_value.raise_for_status = MagicMock()
     session.post.return_value.__aenter__.return_value.status = 200
     session.post.return_value.__aenter__.return_value.text = AsyncMock(return_value='ok')
     session.post.return_value.__aenter__.return_value.json = AsyncMock(return_value={})
+    session.post.return_value.__aenter__.return_value.raise_for_status = MagicMock()
     session.put.return_value.__aenter__.return_value.status = 201
+    session.put.return_value.__aenter__.return_value.raise_for_status = MagicMock()
     session.delete.return_value.__aenter__.return_value.status = 204
+    session.delete.return_value.__aenter__.return_value.raise_for_status = MagicMock()
     session.patch.return_value.__aenter__.return_value.status = 204
+    session.patch.return_value.__aenter__.return_value.raise_for_status = MagicMock()
     session.closed = False
     session.headers = {}
     return session
