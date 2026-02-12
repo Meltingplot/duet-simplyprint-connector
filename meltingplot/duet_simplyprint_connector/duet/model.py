@@ -432,7 +432,7 @@ class DuetPrinter():
             result = response['result']
             changes = self._detect_om_changes(result['seqs'])
 
-        old_om = dict(self.om)
+        old_om = deepcopy(self.om)
         try:
             self.om = merge_dictionary(self.om, result)
             if changes:
@@ -508,7 +508,7 @@ class DuetPrinter():
                     first_message = False
                 else:
                     # Subsequent messages are patches
-                    old_om = dict(self.om)
+                    old_om = deepcopy(self.om)
                     try:
                         self.om = merge_dictionary(self.om, data)
                         self.events.emit(DuetModelEvents.objectmodel, old_om)

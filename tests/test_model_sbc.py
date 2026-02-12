@@ -30,7 +30,9 @@ def mock_dsf_session():
             'seqs': {}
         }
     )
+    session.get.return_value.__aenter__.return_value.raise_for_status = MagicMock()
     session.post.return_value.__aenter__.return_value.text = AsyncMock(return_value='ok')
+    session.post.return_value.__aenter__.return_value.raise_for_status = MagicMock()
     session.closed = False
     return session
 
@@ -178,6 +180,54 @@ async def test_update_object_model_sbc(mock_dsf_session):
     # Verify model was updated
     assert duet_printer.om['state']['status'] == 'processing'
     assert len(events_emitted) == 1
+
+
+@pytest.mark.asyncio
+async def test_update_object_model_old_om_is_deep_copy(mock_dsf_session):
+    """Verify old_om in _update_object_model is a deep copy.
+
+    With a shallow copy, nested dicts in old_om would be shared
+    references to self.om, so after merge_dictionary updates self.om
+    the old_om values would also change — breaking state change detection.
+    """
+    dsf_api = DuetSoftwareFramework(session=mock_dsf_session)
+    duet_printer = DuetPrinter(api=dsf_api, sbc=True)
+
+    # Set initial object model with nested data
+    duet_printer.om = {
+        'state': {'status': 'idle'},
+        'heat': {'heaters': [{'current': 20.0, 'state': 'off'}]},
+        'seqs': {'state': 1},
+    }
+    duet_printer.seqs = {'state': 1}
+
+    # Mock updated model with changed nested values
+    updated_model = {
+        'state': {'status': 'processing'},
+        'heat': {'heaters': [{'current': 60.0, 'state': 'active'}]},
+        'seqs': {'state': 1},
+    }
+    mock_dsf_session.get.return_value.__aenter__.return_value.json = AsyncMock(return_value=updated_model)
+
+    events_emitted = []
+    duet_printer.events.on(DuetModelEvents.objectmodel, lambda old_om: events_emitted.append(old_om))
+
+    await duet_printer._update_object_model()
+
+    assert len(events_emitted) == 1
+    old_om = events_emitted[0]
+
+    # old_om must retain pre-merge values
+    assert old_om['state']['status'] == 'idle', \
+        "old_om should retain the pre-merge state (shallow copy bug)"
+    assert old_om['heat']['heaters'][0]['current'] == 20.0, \
+        "old_om should retain original heater temperature (shallow copy bug)"
+    assert old_om['heat']['heaters'][0]['state'] == 'off', \
+        "old_om should retain original heater state (shallow copy bug)"
+
+    # Current om should have the new values
+    assert duet_printer.om['state']['status'] == 'processing'
+    assert duet_printer.om['heat']['heaters'][0]['current'] == 60.0
 
 
 @pytest.mark.asyncio
@@ -473,6 +523,53 @@ async def test_websocket_loop_processes_patches():
     # Final state should be merged
     assert duet_printer.om['state']['status'] == 'processing'
     assert len(events_emitted) == 2
+
+
+@pytest.mark.asyncio
+async def test_websocket_old_om_is_deep_copy():
+    """Verify old_om passed to event listeners is a deep copy.
+
+    A shallow copy would share nested dict references with self.om,
+    so after merge the old_om would reflect the new state — silently
+    dropping state change events.
+    """
+    dsf_api = DuetSoftwareFramework()
+    duet_printer = DuetPrinter(api=dsf_api, sbc=True)
+
+    full_model = {
+        'state': {'status': 'idle'},
+        'heat': {'heaters': [{'current': 20.0, 'state': 'off'}]},
+        'seqs': {'state': 1},
+    }
+    patch_model = {
+        'state': {'status': 'processing'},
+        'heat': {'heaters': [{'current': 60.0, 'state': 'active'}]},
+        'seqs': {'state': 1},
+    }
+
+    async def mock_subscribe():
+        yield full_model
+        yield patch_model
+
+    dsf_api.subscribe = mock_subscribe
+
+    events_emitted = []
+    duet_printer.events.on(DuetModelEvents.objectmodel, lambda old_om: events_emitted.append(old_om))
+
+    await duet_printer._websocket_loop()
+
+    # The patch event should have old_om with the ORIGINAL values
+    old_om = events_emitted[1]
+    assert old_om['state']['status'] == 'idle', \
+        "old_om should retain the pre-merge state (shallow copy bug)"
+    assert old_om['heat']['heaters'][0]['current'] == 20.0, \
+        "old_om should retain original heater temperature (shallow copy bug)"
+    assert old_om['heat']['heaters'][0]['state'] == 'off', \
+        "old_om should retain original heater state (shallow copy bug)"
+
+    # Current om should have the new values
+    assert duet_printer.om['state']['status'] == 'processing'
+    assert duet_printer.om['heat']['heaters'][0]['current'] == 60.0
 
 
 @pytest.mark.asyncio
