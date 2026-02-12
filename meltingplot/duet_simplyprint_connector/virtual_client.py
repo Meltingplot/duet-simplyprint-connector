@@ -456,9 +456,8 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
 
             f.seek(0)
             prefix = '0:/gcodes/'
-            retries = 3
 
-            while retries > 0:
+            for attempt in range(3):
                 try:
                     # Ensure progress updates are sent during the upload process.
                     await self.duet.upload_stream(
@@ -472,16 +471,23 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
                     return
                 except aiohttp.ClientResponseError as e:
                     if e.status in {401, 500, 503}:
+                        self.logger.warning(
+                            "Upload failed with %d, retrying (attempt %d/3)",
+                            e.status,
+                            attempt + 1,
+                        )
+                        f.seek(0)
                         await self.duet.api.reconnect()
                     else:
-                        # TODO: notify sentry
                         self.logger.exception(
                             "An exception occurred while uploading file to Duet",
                             exc_info=e,
                         )
                         raise e
-                finally:
-                    retries -= 1
+            else:
+                self.logger.error("Upload failed after 3 retries")
+                self.printer.file_progress.state = FileProgressStateEnum.ERROR
+                return
 
         if event.auto_start:
             await self._auto_start_file(event.file_name)
