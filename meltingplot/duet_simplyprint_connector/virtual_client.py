@@ -192,7 +192,7 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
         """Set the firmware information."""
         self.printer.firmware.name = board['firmwareName']
         self.printer.firmware.version = board['firmwareVersion']
-        self.printer.set_api_info("meltingplot.duet-simplyprint-connector", __version__)
+        self.printer.set_api_info("Duet", __version__)
         self.printer.set_ui_info("meltingplot.duet-simplyprint-connector", __version__)
 
     async def _duet_on_objectmodel(self, old_om) -> None:
@@ -760,13 +760,13 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
 
         self.printer.bed.temperature.actual = heaters[bed_heater_index]['current']
         self.printer.bed.temperature.target = (
-            heaters[bed_heater_index]['active'] if heaters[0]['state'] != 'off' else 0.0
+            heaters[bed_heater_index]['active'] if heaters[bed_heater_index]['state'] != 'off' else 0.0
         )
 
         for tool_idx, tool in enumerate(self.printer.tools):
             heater_idx = self.duet.om['tools'][tool_idx]['heaters'][0]
             tool.temperature.actual = heaters[heater_idx]['current']
-            tool.temperature.target = (heaters[heater_idx]['active'] if heaters[1]['state'] != 'off' else 0.0)
+            tool.temperature.target = (heaters[heater_idx]['active'] if heaters[heater_idx]['state'] != 'off' else 0.0)
 
         self.printer.ambient_temperature.ambient = 20
 
