@@ -225,7 +225,7 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
                 await self.duet.tick()
                 self._printer_timeout = time.time() + 60 * 5
                 await asyncio.sleep(0.5)
-            except TimeoutError:
+            except (TimeoutError, asyncio.TimeoutError):
                 continue
             except asyncio.CancelledError as e:
                 await self.duet.close()
