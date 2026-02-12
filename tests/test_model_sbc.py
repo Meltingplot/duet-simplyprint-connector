@@ -799,3 +799,152 @@ async def test_should_retry_websocket_returns_true_after_time():
 
     with patch('time.monotonic', return_value=1000.0):
         assert duet_printer._should_retry_websocket() is True
+
+
+# --- Additional coverage tests ---
+
+
+def test_merge_dictionary_non_dict_destination():
+    """Test merge_dictionary returns deepcopy of source when destination is not a dict."""
+    from meltingplot.duet_simplyprint_connector.duet.model import merge_dictionary
+    source = {'key': 'value', 'nested': {'a': 1}}
+    result = merge_dictionary(source, "not a dict")
+    assert result == source
+    assert result is not source
+    assert result['nested'] is not source['nested']
+
+
+def test_state_property_when_om_is_none():
+    """Test state property returns disconnected when om is None."""
+    from meltingplot.duet_simplyprint_connector.duet.model import DuetState
+    dsf_api = DuetSoftwareFramework()
+    duet_printer = DuetPrinter(api=dsf_api, om=None)
+    assert duet_printer.state == DuetState.disconnected
+
+
+@pytest.mark.asyncio
+async def test_track_state_invalid_old_state():
+    """Test _track_state returns early on invalid old_om state value."""
+    dsf_api = DuetSoftwareFramework()
+    duet_printer = DuetPrinter(
+        api=dsf_api,
+        om={'state': {'status': 'idle'}},
+    )
+    # Mock events to check emit is not called
+    duet_printer.events = MagicMock()
+
+    # old_om with invalid state value
+    old_om = {'state': {'status': 'totally_invalid'}}
+    await duet_printer._track_state(old_om)
+
+    # Should return early due to ValueError, not emit
+    duet_printer.events.emit.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_track_state_old_om_none():
+    """Test _track_state returns early when old_om is None."""
+    dsf_api = DuetSoftwareFramework()
+    duet_printer = DuetPrinter(
+        api=dsf_api,
+        om={'state': {'status': 'idle'}},
+    )
+    duet_printer.events = MagicMock()
+
+    await duet_printer._track_state(None)
+
+    duet_printer.events.emit.assert_not_called()
+
+
+def test_connected_returns_false_when_session_none():
+    """Test connected() returns False when session is None."""
+    rrf_api = RepRapFirmware()
+    rrf_api.session = None
+    duet_printer = DuetPrinter(api=rrf_api)
+    assert duet_printer.connected() is False
+
+
+def test_connected_returns_false_when_session_closed():
+    """Test connected() returns False when session is closed."""
+    rrf_api = RepRapFirmware()
+    rrf_api.session = MagicMock()
+    rrf_api.session.closed = True
+    duet_printer = DuetPrinter(api=rrf_api)
+    assert duet_printer.connected() is False
+
+
+def test_connected_returns_true_when_session_open():
+    """Test connected() returns True when session is open."""
+    rrf_api = RepRapFirmware()
+    rrf_api.session = MagicMock()
+    rrf_api.session.closed = False
+    duet_printer = DuetPrinter(api=rrf_api)
+    assert duet_printer.connected() is True
+
+
+@pytest.mark.asyncio
+async def test_gcode_rrf_no_reply():
+    """Test gcode() in RRF mode with no_reply=True returns empty string."""
+    rrf_api = RepRapFirmware()
+    rrf_api.session = MagicMock()
+    rrf_api.session.closed = False
+    duet_printer = DuetPrinter(api=rrf_api, sbc=False)
+    duet_printer.api.send_gcode = AsyncMock(return_value='ok')
+
+    result = await duet_printer.gcode('G28', no_reply=True)
+    assert result == ''
+
+
+@pytest.mark.asyncio
+async def test_gcode_rrf_with_reply():
+    """Test gcode() in RRF mode with no_reply=False waits for reply."""
+    rrf_api = RepRapFirmware()
+    rrf_api.session = MagicMock()
+    rrf_api.session.closed = False
+    duet_printer = DuetPrinter(api=rrf_api, sbc=False)
+    duet_printer.api.send_gcode = AsyncMock(return_value='')
+
+    # Simulate reply arriving shortly after gcode is sent
+    async def simulate_reply():
+        await asyncio.sleep(0.01)
+        duet_printer._reply = 'M115 reply'
+        duet_printer._wait_for_reply.set()
+
+    asyncio.create_task(simulate_reply())
+    result = await duet_printer.gcode('M115', no_reply=False)
+    assert result == 'M115 reply'
+
+
+@pytest.mark.asyncio
+async def test_reply_returns_reply_value():
+    """Test reply() waits for event and returns _reply."""
+    rrf_api = RepRapFirmware()
+    duet_printer = DuetPrinter(api=rrf_api)
+
+    async def set_reply():
+        await asyncio.sleep(0.01)
+        duet_printer._reply = 'the reply'
+        duet_printer._wait_for_reply.set()
+
+    asyncio.create_task(set_reply())
+    result = await duet_printer.reply()
+    assert result == 'the reply'
+
+
+@pytest.mark.asyncio
+async def test_handle_om_changes_reply_rrf(mock_rrf_session):
+    """Test _handle_om_changes processes reply in RRF mode."""
+    rrf_api = RepRapFirmware(session=mock_rrf_session)
+    duet_printer = DuetPrinter(api=rrf_api, sbc=False)
+    duet_printer.om = {'state': {'status': 'idle'}, 'seqs': {}}
+
+    # Mock rr_reply
+    mock_rrf_session.get.return_value.__aenter__.return_value.json = AsyncMock(return_value={'result': {}})
+    mock_rrf_session.get.return_value.__aenter__.return_value.text = AsyncMock(return_value='G28 reply text')
+    mock_rrf_session.get.return_value.__aenter__.return_value.raise_for_status = MagicMock()
+
+    changes = {'reply': 1}
+    await duet_printer._handle_om_changes(changes)
+
+    assert duet_printer._wait_for_reply.is_set()
+    assert 'reply' not in changes

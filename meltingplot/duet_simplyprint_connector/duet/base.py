@@ -37,7 +37,7 @@ def reauthenticate(retries: int = 3, auth_error_status: int = 401):
                 try:
                     return await f(self, *args, **kwargs)
                 except (
-                    TimeoutError, asyncio.TimeoutError, aiohttp.ClientPayloadError, aiohttp.ClientConnectionError
+                    TimeoutError, asyncio.TimeoutError, aiohttp.ClientPayloadError, aiohttp.ClientConnectionError,
                 ) as e:
                     self.logger.error(f"{e} - retry")
                     remaining -= 1

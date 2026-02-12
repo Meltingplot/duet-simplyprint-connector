@@ -334,7 +334,493 @@ async def test_send_build_objects_only_on_change(virtual_client):
     await virtual_client._send_build_objects(build_objects)
     assert virtual_client.send.call_count == 1
 
-    # Changed objects — should send
+    # Changed objects - should send
     build_objects[0]['cancelled'] = True
     await virtual_client._send_build_objects(build_objects)
     assert virtual_client.send.call_count == 2
+
+
+# --- Group A: Pure/static methods ---
+
+
+@pytest.mark.parametrize(
+    'mode,choices,default,expected_keys',
+    [
+        (0, None, None, []),
+        (1, None, None, ['close']),
+        (2, None, None, ['ok']),
+        (3, None, None, ['ok', 'cancel']),
+        (4, ['Yes', 'No', 'Maybe'], None, ['choice_0', 'choice_1', 'choice_2']),
+        (5, None, 42, ['default', 'cancel']),
+        (6, None, 3.14, ['default', 'cancel']),
+        (7, None, 'hello', ['default', 'cancel']),
+    ],
+)
+def test_messagebox_actions(mode, choices, default, expected_keys):
+    """Test _messagebox_actions for all M291 modes."""
+    actions = VirtualClient._messagebox_actions(mode, choices, default)
+    assert list(actions.keys()) == expected_keys
+
+
+def test_upload_file_progress(virtual_client):
+    """Test _upload_file_progress clamps between 50 and 90."""
+    virtual_client.printer = Mock()
+    virtual_client._upload_file_progress(0)
+    assert virtual_client.printer.file_progress.percent == 50.0
+
+    virtual_client._upload_file_progress(100)
+    assert virtual_client.printer.file_progress.percent == 90.0
+
+    virtual_client._upload_file_progress(50)
+    assert virtual_client.printer.file_progress.percent == 75.0
+
+    # Negative progress clamps to 50
+    virtual_client._upload_file_progress(-10)
+    assert virtual_client.printer.file_progress.percent == 50.0
+
+
+# --- Group B: Simple async handlers ---
+
+
+@pytest.mark.asyncio
+async def test_on_start_print(virtual_client):
+    """Test on_start_print sends M23 and M24."""
+    virtual_client.duet = AsyncMock()
+    virtual_client.printer = Mock()
+    virtual_client.printer.job_info.filename = 'test.gcode'
+
+    await virtual_client.on_start_print(None)
+
+    assert virtual_client.duet.gcode.call_count == 2
+    virtual_client.duet.gcode.assert_any_call('M23 "0:/gcodes/test.gcode"')
+    virtual_client.duet.gcode.assert_any_call('M24')
+
+
+@pytest.mark.asyncio
+async def test_on_pause(virtual_client):
+    """Test on_pause sends M25."""
+    virtual_client.duet = AsyncMock()
+    await virtual_client.on_pause(None)
+    virtual_client.duet.gcode.assert_awaited_once_with('M25')
+
+
+@pytest.mark.asyncio
+async def test_on_resume(virtual_client):
+    """Test on_resume sends M24."""
+    virtual_client.duet = AsyncMock()
+    await virtual_client.on_resume(None)
+    virtual_client.duet.gcode.assert_awaited_once_with('M24')
+
+
+@pytest.mark.asyncio
+async def test_on_cancel(virtual_client):
+    """Test on_cancel sends M25 then M0."""
+    virtual_client.duet = AsyncMock()
+    await virtual_client.on_cancel(None)
+    assert virtual_client.duet.gcode.call_count == 2
+    calls = [c[0][0] for c in virtual_client.duet.gcode.call_args_list]
+    assert calls == ['M25', 'M0']
+
+
+@pytest.mark.asyncio
+async def test_on_api_restart(virtual_client):
+    """Test on_api_restart raises KeyboardInterrupt."""
+    virtual_client.logger = Mock()
+    with pytest.raises(KeyboardInterrupt):
+        await virtual_client.on_api_restart()
+
+
+@pytest.mark.asyncio
+async def test_teardown(virtual_client):
+    """Test teardown is a no-op."""
+    await virtual_client.teardown()
+
+
+# --- Group C: String/validation methods ---
+
+
+def test_set_printer_name_matching(virtual_client):
+    """Test _set_printer_name extracts MBL model from matching name."""
+    virtual_client.printer = Mock()
+    network = {'name': 'meltingplot-MBL 100 ABC123'}
+    virtual_client._set_printer_name(network)
+    assert 'Meltingplot' in virtual_client.printer.firmware.machine_name
+    assert 'MBL' in virtual_client.printer.firmware.machine_name
+
+
+def test_set_printer_name_non_matching(virtual_client):
+    """Test _set_printer_name falls back to network name."""
+    virtual_client.printer = Mock()
+    network = {'name': 'My Custom Printer'}
+    virtual_client._set_printer_name(network)
+    assert virtual_client.printer.firmware.machine_name == 'My Custom Printer'
+
+
+def test_set_firmware_info(virtual_client):
+    """Test _set_firmware_info sets firmware name and version."""
+    virtual_client.printer = Mock()
+    board = {
+        'firmwareName': 'RepRapFirmware',
+        'firmwareVersion': '3.4.5',
+    }
+    virtual_client._set_firmware_info(board)
+    assert virtual_client.printer.firmware.name == 'RepRapFirmware'
+    assert virtual_client.printer.firmware.version == '3.4.5'
+
+
+def test_validate_duet_unique_id_match(virtual_client):
+    """Test _validate_duet_unique_id passes on match."""
+    virtual_client.config.duet_unique_id = 'abc123'
+    board = {'uniqueId': 'abc123'}
+    # Should not raise
+    virtual_client._validate_duet_unique_id(board)
+
+
+def test_validate_duet_unique_id_mismatch(virtual_client):
+    """Test _validate_duet_unique_id raises ValueError on mismatch."""
+    virtual_client.printer = Mock()
+    virtual_client.logger = Mock()
+    virtual_client.config.duet_unique_id = 'abc123'
+    board = {'uniqueId': 'xyz789'}
+    with pytest.raises(ValueError, match='Unique ID mismatch'):
+        virtual_client._validate_duet_unique_id(board)
+
+
+@pytest.mark.asyncio
+async def test_set_duet_unique_id(virtual_client):
+    """Test _set_duet_unique_id sets config and emits event."""
+    virtual_client.event_bus = AsyncMock()
+    board = {'uniqueId': 'new_id_123'}
+    await virtual_client._set_duet_unique_id(board)
+    assert virtual_client.config.duet_unique_id == 'new_id_123'
+    virtual_client.event_bus.emit.assert_awaited_once()
+
+
+# --- Group D: Job info updates ---
+
+
+@pytest.mark.asyncio
+async def test_update_job_progress_normal(virtual_client):
+    """Test _update_job_progress calculates filament-based progress."""
+    virtual_client.printer = Mock()
+    job_status = {
+        'file': {'filament': [100.0, 100.0]},
+        'rawExtrusion': 100.0,
+    }
+    await virtual_client._update_job_progress(job_status)
+    assert virtual_client.printer.job_info.progress == 50.0
+
+
+@pytest.mark.asyncio
+async def test_update_job_progress_zero_filament(virtual_client):
+    """Test _update_job_progress handles zero filament (ZeroDivisionError)."""
+    virtual_client.printer = Mock()
+    job_status = {
+        'file': {'filament': [0.0]},
+        'rawExtrusion': 0.0,
+    }
+    await virtual_client._update_job_progress(job_status)
+    assert virtual_client.printer.job_info.progress == 0.0
+
+
+@pytest.mark.asyncio
+async def test_update_job_progress_missing_key(virtual_client):
+    """Test _update_job_progress handles missing keys."""
+    virtual_client.printer = Mock()
+    await virtual_client._update_job_progress({})
+    assert virtual_client.printer.job_info.progress == 0.0
+
+
+@pytest.mark.asyncio
+async def test_update_job_times_left_normal(virtual_client):
+    """Test _update_job_times_left with valid timesLeft."""
+    virtual_client.printer = Mock()
+    job_status = {
+        'timesLeft': {'filament': 300, 'slicer': 200, 'file': 100},
+    }
+    await virtual_client._update_job_times_left(job_status)
+    # filament has priority
+    assert virtual_client.printer.job_info.time == 300
+
+
+@pytest.mark.asyncio
+async def test_update_job_times_left_fallback(virtual_client):
+    """Test _update_job_times_left falls back through priority chain."""
+    virtual_client.printer = Mock()
+    job_status = {
+        'timesLeft': {'filament': None, 'slicer': None, 'file': 100},
+    }
+    await virtual_client._update_job_times_left(job_status)
+    assert virtual_client.printer.job_info.time == 100
+
+
+@pytest.mark.asyncio
+async def test_update_job_times_left_missing(virtual_client):
+    """Test _update_job_times_left handles missing timesLeft."""
+    virtual_client.printer = Mock()
+    await virtual_client._update_job_times_left({})
+    assert virtual_client.printer.job_info.time == 0
+
+
+@pytest.mark.asyncio
+async def test_update_job_filename(virtual_client):
+    """Test _update_job_filename extracts filename from path."""
+    virtual_client.printer = Mock()
+    job_status = {
+        'file': {'fileName': '0:/gcodes/subfolder/test.gcode'},
+        'duration': 5,
+    }
+    await virtual_client._update_job_filename(job_status)
+    assert virtual_client.printer.job_info.filename == 'test.gcode'
+    assert virtual_client.printer.job_info.started is True
+
+
+@pytest.mark.asyncio
+async def test_update_job_filename_missing(virtual_client):
+    """Test _update_job_filename handles missing data gracefully."""
+    virtual_client.printer = Mock()
+    await virtual_client._update_job_filename({})
+    # Should not crash; no assertion on filename since it's a Mock
+
+
+@pytest.mark.asyncio
+async def test_update_job_layer(virtual_client):
+    """Test _update_job_layer extracts layer from job status."""
+    virtual_client.printer = Mock()
+    await virtual_client._update_job_layer({'layer': 42})
+    assert virtual_client.printer.job_info.layer == 42
+
+
+@pytest.mark.asyncio
+async def test_update_job_layer_missing(virtual_client):
+    """Test _update_job_layer defaults to 0."""
+    virtual_client.printer = Mock()
+    await virtual_client._update_job_layer({})
+    assert virtual_client.printer.job_info.layer == 0
+
+
+@pytest.mark.asyncio
+async def test_update_times_left_priority(virtual_client):
+    """Test _update_times_left follows filament > slicer > file > 0."""
+    virtual_client.printer = Mock()
+    await virtual_client._update_times_left({'filament': 100, 'slicer': 200, 'file': 300})
+    assert virtual_client.printer.job_info.time == 100
+
+    await virtual_client._update_times_left({'filament': None, 'slicer': 200, 'file': 300})
+    assert virtual_client.printer.job_info.time == 200
+
+    await virtual_client._update_times_left({'filament': None, 'slicer': None, 'file': 300})
+    assert virtual_client.printer.job_info.time == 300
+
+    await virtual_client._update_times_left({'filament': None, 'slicer': None, 'file': None})
+    assert virtual_client.printer.job_info.time == 0
+
+
+@pytest.mark.asyncio
+async def test_is_printing_by_status(virtual_client):
+    """Test _is_printing returns True for printing-related statuses."""
+    virtual_client.duet = Mock()
+    virtual_client.duet.om = {'job': {'file': {}}}
+
+    for status in [PrinterStatus.PRINTING, PrinterStatus.PAUSED, PrinterStatus.PAUSING, PrinterStatus.RESUMING]:
+        virtual_client.printer = Mock()
+        virtual_client.printer.status = status
+        assert await virtual_client._is_printing() is True
+
+
+@pytest.mark.asyncio
+async def test_is_printing_by_filename(virtual_client):
+    """Test _is_printing returns True when job has a filename."""
+    virtual_client.printer = Mock()
+    virtual_client.printer.status = PrinterStatus.OPERATIONAL
+    virtual_client.duet = Mock()
+    virtual_client.duet.om = {'job': {'file': {'filename': 'test.gcode'}}}
+
+    assert await virtual_client._is_printing() is True
+
+
+@pytest.mark.asyncio
+async def test_is_printing_false(virtual_client):
+    """Test _is_printing returns False when idle and no filename."""
+    virtual_client.printer = Mock()
+    virtual_client.printer.status = PrinterStatus.OPERATIONAL
+    virtual_client.duet = Mock()
+    virtual_client.duet.om = {'job': {'file': {}}}
+
+    assert await virtual_client._is_printing() is False
+
+
+@pytest.mark.asyncio
+async def test_update_printer_status_cancelling(virtual_client):
+    """Test _update_printer_status detects cancel transition."""
+    virtual_client.printer = Mock()
+    virtual_client.printer.status = PrinterStatus.PRINTING
+    virtual_client.duet = Mock()
+    virtual_client.duet.om = {'state': {'status': 'cancelling'}, 'job': {'file': {}}}
+
+    await virtual_client._update_printer_status()
+
+    assert virtual_client.printer.status == PrinterStatus.CANCELLING
+    assert virtual_client.printer.job_info.cancelled is True
+
+
+@pytest.mark.asyncio
+async def test_update_printer_status_finished(virtual_client):
+    """Test _update_printer_status detects finish transition."""
+    virtual_client.printer = Mock()
+    virtual_client.printer.status = PrinterStatus.PRINTING
+    virtual_client.printer.job_info.started = True
+    virtual_client.duet = Mock()
+    virtual_client.duet.om = {'state': {'status': 'idle'}, 'job': {'file': {}}}
+
+    await virtual_client._update_printer_status()
+
+    assert virtual_client.printer.job_info.finished is True
+    assert virtual_client.printer.job_info.progress == 100.0
+
+
+@pytest.mark.asyncio
+async def test_mark_job_as_finished(virtual_client):
+    """Test _mark_job_as_finished sets finished, progress, and clears build objects."""
+    virtual_client.printer = Mock()
+    virtual_client._last_build_objects = [{'name': 'obj1'}]
+
+    await virtual_client._mark_job_as_finished()
+
+    assert virtual_client.printer.job_info.finished is True
+    assert virtual_client.printer.job_info.progress == 100.0
+    assert virtual_client._last_build_objects is None
+
+
+# --- Group E: Sensor/temperature/network updates ---
+
+
+@pytest.mark.asyncio
+async def test_update_temperatures(virtual_client):
+    """Test _update_temperatures sets bed and tool temperatures."""
+    virtual_client.printer = Mock()
+    virtual_client.printer.tools = [Mock()]
+    virtual_client.duet = Mock()
+    virtual_client.duet.om = {
+        'heat': {
+            'bedHeaters': [0],
+            'heaters': [
+                {'current': 60.0, 'active': 65.0, 'state': 'active'},
+                {'current': 200.0, 'active': 210.0, 'state': 'active'},
+            ],
+        },
+        'tools': [
+            {'heaters': [1]},
+        ],
+    }
+
+    await virtual_client._update_temperatures()
+
+    assert virtual_client.printer.bed.temperature.actual == 60.0
+    assert virtual_client.printer.bed.temperature.target == 65.0
+    assert virtual_client.printer.tools[0].temperature.actual == 200.0
+    assert virtual_client.printer.tools[0].temperature.target == 210.0
+    assert virtual_client.printer.ambient_temperature.ambient == 20
+
+
+@pytest.mark.asyncio
+async def test_update_temperatures_off_state(virtual_client):
+    """Test _update_temperatures shows 0.0 target when heater is off."""
+    virtual_client.printer = Mock()
+    virtual_client.printer.tools = [Mock()]
+    virtual_client.duet = Mock()
+    virtual_client.duet.om = {
+        'heat': {
+            'bedHeaters': [0],
+            'heaters': [
+                {'current': 25.0, 'active': 65.0, 'state': 'off'},
+                {'current': 25.0, 'active': 210.0, 'state': 'off'},
+            ],
+        },
+        'tools': [
+            {'heaters': [1]},
+        ],
+    }
+
+    await virtual_client._update_temperatures()
+
+    assert virtual_client.printer.bed.temperature.target == 0.0
+    assert virtual_client.printer.tools[0].temperature.target == 0.0
+
+
+@pytest.mark.asyncio
+async def test_update_filament_sensor_loaded(virtual_client):
+    """Test _update_filament_sensor sets LOADED when status is ok."""
+    virtual_client.printer = Mock()
+    virtual_client.duet = Mock()
+    virtual_client.duet.om = {
+        'sensors': {
+            'filamentMonitors': [
+                {'enableMode': 1, 'status': 'ok'},
+            ],
+        },
+    }
+
+    await virtual_client._update_filament_sensor()
+
+    from simplyprint_ws_client.core.state import FilamentSensorEnum
+    assert virtual_client.printer.filament_sensor.state == FilamentSensorEnum.LOADED
+
+
+@pytest.mark.asyncio
+async def test_update_filament_sensor_runout(virtual_client):
+    """Test _update_filament_sensor sets RUNOUT when status is not ok."""
+    virtual_client.printer = Mock()
+    virtual_client.duet = Mock()
+    virtual_client.duet.om = {
+        'sensors': {
+            'filamentMonitors': [
+                {'enableMode': 1, 'status': 'noFilament'},
+            ],
+        },
+    }
+
+    await virtual_client._update_filament_sensor()
+
+    from simplyprint_ws_client.core.state import FilamentSensorEnum
+    assert virtual_client.printer.filament_sensor.state == FilamentSensorEnum.RUNOUT
+
+
+@pytest.mark.asyncio
+async def test_update_filament_sensor_calibrated_runout(virtual_client):
+    """Test _update_filament_sensor detects runout via calibration thresholds."""
+    virtual_client.printer = Mock()
+    virtual_client.printer.status = PrinterStatus.PAUSED
+    virtual_client.duet = Mock()
+    virtual_client.duet.om = {
+        'sensors': {
+            'filamentMonitors': [
+                {
+                    'enableMode': 1,
+                    'status': 'ok',
+                    'calibrated': {'percentMin': 50, 'percentMax': 150},
+                    'configured': {'percentMin': 80, 'percentMax': 120},
+                },
+            ],
+        },
+    }
+
+    await virtual_client._update_filament_sensor()
+
+    from simplyprint_ws_client.core.state import FilamentSensorEnum
+    assert virtual_client.printer.filament_sensor.state == FilamentSensorEnum.RUNOUT
+
+
+def test_update_network_info(virtual_client):
+    """Test _update_network_info sets local_ip and mac."""
+    virtual_client.printer = Mock()
+
+    with patch(
+        'meltingplot.duet_simplyprint_connector.virtual_client.get_local_ip_and_mac',
+    ) as mock_net:
+        from meltingplot.duet_simplyprint_connector.network import NetworkInfo
+        mock_net.return_value = NetworkInfo(ip='192.168.1.10', mac='aa:bb:cc:dd:ee:ff')
+        virtual_client._update_network_info()
+
+    assert virtual_client.printer.info.local_ip == '192.168.1.10'
+    assert virtual_client.printer.info.mac == 'aa:bb:cc:dd:ee:ff'
