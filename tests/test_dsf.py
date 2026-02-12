@@ -149,6 +149,14 @@ async def test_upload_string_content(dsf, mock_session):
 
 
 @pytest.mark.asyncio
+async def test_upload_failure(dsf, mock_session):
+    mock_session.put.return_value.__aenter__.return_value.status = 500
+    mock_session.put.return_value.__aenter__.return_value.text = AsyncMock(return_value='Internal Server Error')
+    with pytest.raises(IOError, match='Upload failed with status 500'):
+        await dsf.upload('0:/gcodes/test.gcode', b'G28')
+
+
+@pytest.mark.asyncio
 async def test_upload_stream(dsf, mock_session):
     file = MagicMock()
     file.tell.return_value = 12
@@ -157,6 +165,18 @@ async def test_upload_stream(dsf, mock_session):
     await dsf.upload_stream('0:/gcodes/test.gcode', file)
     mock_session.put.assert_called_once()
     assert mock_session.put.call_args[1]['url'] == 'http://10.42.0.2/machine/file/0%3A%2Fgcodes%2Ftest.gcode'
+
+
+@pytest.mark.asyncio
+async def test_upload_stream_failure(dsf, mock_session):
+    file = MagicMock()
+    file.tell.return_value = 12
+    file.read.side_effect = [b'chunk1', b'chunk2', b'']
+    mock_session.reset_mock()
+    mock_session.put.return_value.__aenter__.return_value.status = 500
+    mock_session.put.return_value.__aenter__.return_value.text = AsyncMock(return_value='Internal Server Error')
+    with pytest.raises(IOError, match='Upload failed with status 500'):
+        await dsf.upload_stream('0:/gcodes/test.gcode', file)
 
 
 @pytest.mark.asyncio

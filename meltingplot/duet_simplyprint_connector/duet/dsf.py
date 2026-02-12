@@ -274,7 +274,9 @@ class DuetSoftwareFramework(DuetAPIBase):
         async with self.session.put(url, data=content, headers=headers) as r:
             # DSF returns 201 Created on success
             if r.status not in (200, 201):
+                body = await r.text()
                 self.logger.warning(f'Unexpected status {r.status} during upload')
+                raise IOError(f"Upload failed with status {r.status}: {body}")
 
     async def upload_stream(
         self,
@@ -326,7 +328,9 @@ class DuetSoftwareFramework(DuetAPIBase):
         ) as r:
             # DSF returns 201 Created on success
             if r.status not in (200, 201):
+                body = await r.text()
                 self.logger.warning(f'Unexpected status {r.status} during upload_stream')
+                raise IOError(f"Upload failed with status {r.status}: {body}")
 
     @reauthenticate(auth_error_status=403)
     async def delete(self, filepath: str, recursive: bool = False) -> None:
