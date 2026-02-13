@@ -542,8 +542,7 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
             self.printer.job_info.object = current_object
 
         skipped = [
-            idx for idx, obj in enumerate(build_objects)
-            if isinstance(obj, dict) and obj.get('cancelled', False)
+            idx for idx, obj in enumerate(build_objects) if isinstance(obj, dict) and obj.get('cancelled', False)
         ]
         self.printer.job_info.skipped_objects = skipped
 
@@ -633,7 +632,7 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
         messagebox = self.duet.om.get('state', {}).get('messageBox', None)
         retained_events = []
 
-        if messagebox is not None:
+        if messagebox is not None and isinstance(messagebox, dict):
             raw_seq = messagebox.get('seq', None)
             mode = messagebox.get('mode', 0)
             title = messagebox.get('title', '') or 'Printer Message'
