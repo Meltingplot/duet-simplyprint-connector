@@ -235,6 +235,28 @@ async def test_handle_heater_faults_retains_only_active_faults(virtual_client):
 
 
 @pytest.mark.asyncio
+async def test_handle_heater_faults_partial_om(virtual_client):
+    """Test that _handle_heater_faults handles partial OM with missing heater state."""
+    virtual_client.printer = Mock()
+    virtual_client.logger = Mock()
+    virtual_client.duet = Mock()
+    virtual_client.duet.om = {
+        'heat': {
+            'heaters': [
+                None,
+                {'current': 25.0},
+                {'state': 'active', 'current': 200.0},
+            ]
+        }
+    }
+
+    # Should not raise
+    await virtual_client._handle_heater_faults(old_om=None)
+
+    virtual_client.printer.notifications.filter_retain_keys.assert_called_once()
+
+
+@pytest.mark.asyncio
 async def test_on_skip_objects_sends_m486_for_each_object(virtual_client):
     """Test that on_skip_objects sends M486 P{id} for each object."""
     virtual_client.logger = Mock()
@@ -809,6 +831,63 @@ async def test_update_filament_sensor_calibrated_runout(virtual_client):
 
     from simplyprint_ws_client.core.state import FilamentSensorEnum
     assert virtual_client.printer.filament_sensor.state == FilamentSensorEnum.RUNOUT
+
+
+@pytest.mark.asyncio
+async def test_update_filament_sensor_partial_om(virtual_client):
+    """Test _update_filament_sensor skips None monitors in partial OM."""
+    virtual_client.printer = Mock()
+    virtual_client.duet = Mock()
+    virtual_client.duet.om = {
+        'sensors': {
+            'filamentMonitors': [
+                None,
+                {'status': 'ok'},
+                {'enableMode': 1, 'status': 'ok'},
+            ],
+        },
+    }
+
+    await virtual_client._update_filament_sensor()
+
+    from simplyprint_ws_client.core.state import FilamentSensorEnum
+    assert virtual_client.printer.filament_sensor.state == FilamentSensorEnum.LOADED
+
+
+@pytest.mark.asyncio
+async def test_update_skipped_objects_partial_om(virtual_client):
+    """Test _update_skipped_objects handles None objects in partial OM."""
+    virtual_client.printer = Mock()
+    virtual_client.send = AsyncMock()
+    job_status = {
+        'build': {
+            'currentObject': 0,
+            'objects': [
+                {'cancelled': True, 'name': 'object_0'},
+                None,
+                {'cancelled': False, 'name': 'object_2'},
+            ],
+        },
+    }
+
+    await virtual_client._update_skipped_objects(job_status)
+
+    assert virtual_client.printer.job_info.skipped_objects == [0]
+
+
+@pytest.mark.asyncio
+async def test_send_build_objects_partial_om(virtual_client):
+    """Test _send_build_objects skips None entries in partial OM."""
+    virtual_client.send = AsyncMock()
+    build_objects = [
+        {'name': 'object_0', 'x': [0, 10], 'y': [0, 10]},
+        None,
+        {'name': 'object_2'},
+    ]
+
+    await virtual_client._send_build_objects(build_objects)
+
+    assert virtual_client.send.call_count == 1
 
 
 def test_update_network_info(virtual_client):

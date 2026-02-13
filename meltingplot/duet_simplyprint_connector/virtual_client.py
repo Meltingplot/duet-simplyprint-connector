@@ -204,8 +204,8 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
         try:
             await self._update_temperatures()
         except KeyError:
-            self.printer.bed_temperature.actual = 0.0
-            self.printer.tool_temperatures[0].actual = 0.0
+            self.printer.bed.temperature.actual = 0.0
+            self.printer.tools[0].temperature.actual = 0.0
 
         if await self._is_printing():
             await self._update_job_info()
@@ -541,7 +541,10 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
         if current_object is not None and current_object >= 0:
             self.printer.job_info.object = current_object
 
-        skipped = [idx for idx, obj in enumerate(build_objects) if obj.get('cancelled', False)]
+        skipped = [
+            idx for idx, obj in enumerate(build_objects)
+            if isinstance(obj, dict) and obj.get('cancelled', False)
+        ]
         self.printer.job_info.skipped_objects = skipped
 
         await self._send_build_objects(build_objects)
@@ -557,10 +560,12 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
         if build_objects == self._last_build_objects:
             return
 
-        self._last_build_objects = [dict(obj) for obj in build_objects]
+        self._last_build_objects = [dict(obj) for obj in build_objects if obj]
 
         entries = []
         for idx, obj in enumerate(build_objects):
+            if not obj:
+                continue
             entry = JobObjectEntry(id=idx, name=obj.get('name'))
 
             x_bounds = obj.get('x')
@@ -582,7 +587,10 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
         retained_events = []
 
         for heater_idx, heater in enumerate(heaters):
-            if heater['state'] != 'fault':
+            try:
+                if heater['state'] != 'fault':
+                    continue
+            except (KeyError, TypeError):
                 continue
 
             self.logger.error(f"Heater {heater_idx} is in fault state")
@@ -860,7 +868,12 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
         filament_monitors = self.duet.om.get('sensors', {}).get('filamentMonitors', [])
 
         for monitor in filament_monitors:
-            if monitor.get('enableMode', 0) > 0:
+            try:
+                enable_mode = monitor['enableMode']
+            except (KeyError, TypeError):
+                continue
+
+            if enable_mode > 0:
                 self.printer.settings.has_filament_settings = True
                 if monitor.get('status') == 'ok':
                     self.printer.filament_sensor.state = FilamentSensorEnum.LOADED
