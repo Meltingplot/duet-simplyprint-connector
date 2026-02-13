@@ -948,3 +948,51 @@ async def test_handle_om_changes_reply_rrf(mock_rrf_session):
 
     assert duet_printer._wait_for_reply.is_set()
     assert 'reply' not in changes
+
+
+@pytest.mark.asyncio
+async def test_fetch_objectmodel_recursive_expands_nested_dicts_at_depth_2(mock_rrf_session):
+    """Verify RRF recursive fetch expands nested dicts when depth > 1.
+
+    _handle_om_changes calls _fetch_objectmodel_recursive with depth=2.
+    When the response contains nested dict values (e.g. messageBox),
+    those must be recursively expanded — otherwise they come back as {}.
+
+    Regression test for the Duet2 messageBox fix.
+    """
+    rrf_api = RepRapFirmware(session=mock_rrf_session)
+    duet_printer = DuetPrinter(api=rrf_api, sbc=False)
+
+    # rr_model responses keyed by (key, depth):
+    # 1. key='state', depth=2 → status is a string (leaf, skipped), messageBox is nested {}
+    # 2. key='state.messageBox', depth=99 → expanded dict with the actual content
+    # Leaf values (status, messageBox sub-keys) are not re-fetched since the
+    # recursive function skips non-list/non-dict values already present in the response.
+    messagebox_content = {
+        'mode': 1,
+        'message': 'Please check',
+        'title': 'User Message',
+        'seq': 5,
+    }
+    responses = {
+        ('state', 2): {'status': 'idle', 'messageBox': {}},
+        ('state.messageBox', 99): messagebox_content,
+    }
+
+    async def mock_rr_model(*args, **kwargs):
+        key = kwargs.get('key', '')
+        depth = kwargs.get('depth', 1)
+        return {'result': responses[(key, depth)], 'next': 0}
+
+    rrf_api.rr_model = AsyncMock(side_effect=mock_rr_model)
+
+    result = await duet_printer._fetch_objectmodel_recursive(key='state', depth=2)
+
+    # messageBox must be fully expanded, not left as {}
+    assert result['result']['messageBox'] == {
+        'mode': 1,
+        'message': 'Please check',
+        'title': 'User Message',
+        'seq': 5,
+    }
+    assert result['result']['status'] == 'idle'

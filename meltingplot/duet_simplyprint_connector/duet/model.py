@@ -313,10 +313,12 @@ class DuetPrinter():
             **kwargs,
         )
 
-        if isinstance(response['result'], dict) and key != "global":
+        if isinstance(response['result'], dict) and not (depth == 1 and key == "global"):
             for k, v in response['result'].items():
+                if not isinstance(v, (list, dict)):
+                    continue
                 sub_key = f"{key}.{k}" if key else k
-                sub_depth = depth + 1 if isinstance(v, dict) else 99
+                sub_depth = depth + 1 if isinstance(v, dict) and depth < 2 else 99
                 sub_response = await self._fetch_objectmodel_recursive(
                     *args,
                     key=sub_key,
