@@ -996,3 +996,320 @@ async def test_fetch_objectmodel_recursive_expands_nested_dicts_at_depth_2(mock_
         'seq': 5,
     }
     assert result['result']['status'] == 'idle'
+
+
+@pytest.mark.asyncio
+async def test_fetch_objectmodel_recursive_skips_leaf_values(mock_rrf_session):
+    """Verify RRF recursive fetch does not re-fetch leaf (non-dict/list) values.
+
+    Leaf values like strings, ints, bools are already present in the response
+    at the current depth — re-fetching them wastes requests to the Duet board.
+    """
+    rrf_api = RepRapFirmware(session=mock_rrf_session)
+    duet_printer = DuetPrinter(api=rrf_api, sbc=False)
+
+    responses = {
+        ('state', 2): {
+            'status': 'idle',
+            'upTime': 12345,
+            'machineMode': 'FFF',
+            'messageBox': None,
+        },
+    }
+
+    async def mock_rr_model(*args, **kwargs):
+        key = kwargs.get('key', '')
+        depth = kwargs.get('depth', 1)
+        return {'result': responses[(key, depth)], 'next': 0}
+
+    rrf_api.rr_model = AsyncMock(side_effect=mock_rr_model)
+
+    result = await duet_printer._fetch_objectmodel_recursive(key='state', depth=2)
+
+    # Only one call should have been made — no sub-fetches for leaf values
+    assert rrf_api.rr_model.call_count == 1
+    assert result['result'] == {
+        'status': 'idle',
+        'upTime': 12345,
+        'machineMode': 'FFF',
+        'messageBox': None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_fetch_objectmodel_recursive_expands_lists(mock_rrf_session):
+    """Verify RRF recursive fetch expands list values via sub-fetch.
+
+    Lists (e.g. heaters, axes) must be recursively fetched to get
+    the full content since the initial depth may truncate them.
+    """
+    rrf_api = RepRapFirmware(session=mock_rrf_session)
+    duet_printer = DuetPrinter(api=rrf_api, sbc=False)
+
+    heaters_expanded = [{'current': 20.0, 'state': 'off'}, {'current': 60.0, 'state': 'active'}]
+    responses = {
+        ('heat', 2): {
+            'heaters': [],
+        },
+        ('heat.heaters', 99): heaters_expanded,
+    }
+
+    async def mock_rr_model(*args, **kwargs):
+        key = kwargs.get('key', '')
+        depth = kwargs.get('depth', 1)
+        return {'result': responses[(key, depth)], 'next': 0}
+
+    rrf_api.rr_model = AsyncMock(side_effect=mock_rr_model)
+
+    result = await duet_printer._fetch_objectmodel_recursive(key='heat', depth=2)
+
+    assert result['result']['heaters'] == heaters_expanded
+    assert rrf_api.rr_model.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_fetch_objectmodel_recursive_global_key_not_expanded_at_depth_1(mock_rrf_session):
+    """Verify 'global' key is NOT recursively expanded at depth=1.
+
+    The global namespace can contain arbitrary user variables. Recursively
+    expanding it would generate excessive requests for each variable.
+    """
+    rrf_api = RepRapFirmware(session=mock_rrf_session)
+    duet_printer = DuetPrinter(api=rrf_api, sbc=False)
+
+    async def mock_rr_model(*args, **kwargs):
+        return {
+            'result': {
+                'myVar': 42,
+                'nested': {'a': 1},
+            },
+            'next': 0,
+        }
+
+    rrf_api.rr_model = AsyncMock(side_effect=mock_rr_model)
+
+    result = await duet_printer._fetch_objectmodel_recursive(key='global', depth=1)
+
+    # Only one call — global should not trigger recursive expansion at depth=1
+    assert rrf_api.rr_model.call_count == 1
+    assert result['result'] == {'myVar': 42, 'nested': {'a': 1}}
+
+
+@pytest.mark.asyncio
+async def test_fetch_objectmodel_recursive_global_key_expanded_at_depth_2(mock_rrf_session):
+    """Verify 'global' key IS expanded when depth > 1.
+
+    When _handle_om_changes detects a global seq change, it calls with
+    depth=2. At that depth the global guard should not apply.
+    """
+    rrf_api = RepRapFirmware(session=mock_rrf_session)
+    duet_printer = DuetPrinter(api=rrf_api, sbc=False)
+
+    responses = {
+        ('global', 2): {
+            'myVar': 42,
+            'nested': {},
+        },
+        ('global.nested', 99): {'a': 1, 'b': 2},
+    }
+
+    async def mock_rr_model(*args, **kwargs):
+        key = kwargs.get('key', '')
+        depth = kwargs.get('depth', 1)
+        return {'result': responses[(key, depth)], 'next': 0}
+
+    rrf_api.rr_model = AsyncMock(side_effect=mock_rr_model)
+
+    result = await duet_printer._fetch_objectmodel_recursive(key='global', depth=2)
+
+    # nested dict should have been expanded
+    assert result['result']['nested'] == {'a': 1, 'b': 2}
+    assert rrf_api.rr_model.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_fetch_objectmodel_recursive_paginates_arrays(mock_rrf_session):
+    """Verify array pagination via 'next' field works correctly.
+
+    When rr_model returns a list with next > 0, the function should
+    fetch the remaining items and concatenate them.
+    """
+    rrf_api = RepRapFirmware(session=mock_rrf_session)
+    duet_printer = DuetPrinter(api=rrf_api, sbc=False)
+
+    call_count = 0
+
+    async def mock_rr_model(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        array = kwargs.get('array')
+        if array is None:
+            return {'result': ['item0', 'item1'], 'next': 2}
+        elif array == 2:
+            return {'result': ['item2', 'item3'], 'next': 0}
+        return {'result': [], 'next': 0}
+
+    rrf_api.rr_model = AsyncMock(side_effect=mock_rr_model)
+
+    result = await duet_printer._fetch_objectmodel_recursive(key='plugins', depth=99)
+
+    assert result['result'] == ['item0', 'item1', 'item2', 'item3']
+    assert result['next'] == 0
+    assert call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_handle_om_changes_fetches_changed_keys_at_depth_2(mock_rrf_session):
+    """Verify _handle_om_changes fetches each changed key at depth=2.
+
+    This is the entry point that triggers the recursive fetch for partial
+    updates — the depth=2 call must correctly expand nested objects.
+    """
+    rrf_api = RepRapFirmware(session=mock_rrf_session)
+    duet_printer = DuetPrinter(api=rrf_api, sbc=False)
+    duet_printer.om = {
+        'state': {'status': 'idle', 'messageBox': None},
+        'heat': {'heaters': [{'current': 20.0}]},
+        'seqs': {},
+    }
+
+    responses = {
+        ('state', 2): {
+            'status': 'processing',
+            'messageBox': {},
+        },
+        ('state.messageBox', 99): {
+            'mode': 1,
+            'message': 'Check filament',
+            'title': 'Alert',
+            'seq': 3,
+        },
+    }
+
+    async def mock_rr_model(*args, **kwargs):
+        key = kwargs.get('key', '')
+        depth = kwargs.get('depth', 1)
+        return {'result': responses[(key, depth)], 'next': 0}
+
+    rrf_api.rr_model = AsyncMock(side_effect=mock_rr_model)
+
+    changes = {'state': 2}
+    await duet_printer._handle_om_changes(changes)
+
+    # om['state'] should be fully expanded with messageBox content
+    assert duet_printer.om['state']['messageBox'] == {
+        'mode': 1,
+        'message': 'Check filament',
+        'title': 'Alert',
+        'seq': 3,
+    }
+    assert duet_printer.om['state']['status'] == 'processing'
+    # heat should be untouched
+    assert duet_printer.om['heat']['heaters'][0]['current'] == 20.0
+
+
+@pytest.mark.asyncio
+async def test_fetch_objectmodel_recursive_depth_1_full_model(mock_rrf_session):
+    """Verify depth=1 full model fetch recurses into top-level dict keys.
+
+    _fetch_full_status uses key='', depth=1. Each top-level key that
+    returns a dict must be recursively expanded — including global,
+    which is fetched as sub-key at depth=2 where the global guard
+    does not apply.
+    """
+    rrf_api = RepRapFirmware(session=mock_rrf_session)
+    duet_printer = DuetPrinter(api=rrf_api, sbc=False)
+
+    responses = {
+        ('', 1): {
+            'state': {},
+            'heat': {},
+            'global': {},
+        },
+        ('state', 2): {
+            'status': 'idle',
+        },
+        ('heat', 2): {
+            'heaters': [],
+        },
+        ('heat.heaters', 99): [{'current': 20.0}],
+        ('global', 2): {
+            'myVar': 1,
+        },
+    }
+
+    async def mock_rr_model(*args, **kwargs):
+        key = kwargs.get('key', '')
+        depth = kwargs.get('depth', 1)
+        return {'result': responses[(key, depth)], 'next': 0}
+
+    rrf_api.rr_model = AsyncMock(side_effect=mock_rr_model)
+
+    result = await duet_printer._fetch_objectmodel_recursive(key='', depth=1)
+
+    assert result['result']['state'] == {'status': 'idle'}
+    assert result['result']['heat']['heaters'] == [{'current': 20.0}]
+    assert result['result']['global'] == {'myVar': 1}
+
+
+def test_merge_dictionary_null_values_applied():
+    """Verify merge_dictionary applies null values from destination.
+
+    In RRF frequently responses, null means "this value is null" — not
+    "unchanged". The merge must apply these nulls.
+    """
+    from meltingplot.duet_simplyprint_connector.duet.model import merge_dictionary
+
+    source = {
+        'state': {'messageBox': {'mode': 1, 'message': 'hello'}},
+    }
+    destination = {
+        'state': {'messageBox': None},
+    }
+
+    result = merge_dictionary(source, destination)
+
+    # destination wins — messageBox should be None
+    assert result['state']['messageBox'] is None
+
+
+def test_merge_dictionary_preserves_absent_keys():
+    """Verify merge_dictionary preserves source keys absent from destination.
+
+    When a frequently response omits a key, the existing value from
+    the full model (source) must be preserved.
+    """
+    from meltingplot.duet_simplyprint_connector.duet.model import merge_dictionary
+
+    source = {
+        'state': {'status': 'idle', 'upTime': 12345},
+        'heat': {'heaters': [{'current': 20.0}]},
+    }
+    destination = {
+        'state': {'status': 'processing'},
+    }
+
+    result = merge_dictionary(source, destination)
+
+    assert result['state']['status'] == 'processing'
+    assert result['state']['upTime'] == 12345
+    assert result['heat']['heaters'][0]['current'] == 20.0
+
+
+def test_merge_dictionary_list_different_lengths():
+    """Verify merge_dictionary handles lists of different lengths."""
+    from meltingplot.duet_simplyprint_connector.duet.model import merge_dictionary
+
+    source = {
+        'heaters': [{'current': 20.0}, {'current': 30.0}, {'current': 40.0}],
+    }
+    destination = {
+        'heaters': [{'current': 60.0}],
+    }
+
+    result = merge_dictionary(source, destination)
+
+    # Index 0: destination wins, indices 1-2: source preserved
+    assert result['heaters'][0]['current'] == 60.0
+    assert result['heaters'][1]['current'] == 30.0
+    assert result['heaters'][2]['current'] == 40.0
