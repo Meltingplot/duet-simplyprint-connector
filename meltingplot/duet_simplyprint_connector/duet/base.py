@@ -16,7 +16,7 @@ import aiohttp
 import attr
 
 
-def reauthenticate(retries: int = 3, auth_error_status: int = 401):
+def reauthenticate(retries: int = 3, auth_error_status: list[int] = None):
     """Reauthenticate API requests.
 
     Decorator that wraps async API methods with retry logic for handling
@@ -27,6 +27,7 @@ def reauthenticate(retries: int = 3, auth_error_status: int = 401):
     :param auth_error_status: HTTP status code indicating auth failure
                               (401 for RRF, 403 for DSF)
     """
+    auth_error_status = auth_error_status or [401]
 
     def decorator(f):
 
@@ -37,7 +38,10 @@ def reauthenticate(retries: int = 3, auth_error_status: int = 401):
                 try:
                     return await f(self, *args, **kwargs)
                 except (
-                    TimeoutError, asyncio.TimeoutError, aiohttp.ClientPayloadError, aiohttp.ClientConnectionError,
+                    TimeoutError,
+                    asyncio.TimeoutError,
+                    aiohttp.ClientPayloadError,
+                    aiohttp.ClientConnectionError,
                 ) as e:
                     self.logger.error(f"{e} - retry")
                     remaining -= 1
@@ -47,7 +51,7 @@ def reauthenticate(retries: int = 3, auth_error_status: int = 401):
                     remaining -= 1
                     if e.status in self.callbacks:
                         await self.callbacks[e.status](e)
-                    elif e.status == auth_error_status:
+                    elif e.status in auth_error_status:
                         self.logger.error(
                             f'Auth error ({e.status}) while requesting {e.request_info!s} - retry',
                         )

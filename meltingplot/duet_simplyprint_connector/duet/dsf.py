@@ -160,7 +160,7 @@ class DuetSoftwareFramework(DuetAPIBase):
         """Check if WebSocket is connected."""
         return self._ws_connected and self._ws is not None and not self._ws.closed
 
-    @reauthenticate(auth_error_status=403)
+    @reauthenticate(auth_error_status=[401, 403])
     async def noop(self) -> None:
         """Send keep-alive request to DSF."""
         await self._ensure_session()
@@ -172,7 +172,7 @@ class DuetSoftwareFramework(DuetAPIBase):
             if r.status != 204:
                 self.logger.warning(f'Unexpected status {r.status} during noop')
 
-    @reauthenticate(auth_error_status=403)
+    @reauthenticate(auth_error_status=[401, 403])
     async def model(self) -> dict:
         """Get the full machine object model."""
         self.logger.debug("model: fetching full object model")
@@ -186,7 +186,7 @@ class DuetSoftwareFramework(DuetAPIBase):
             response = await r.json()
         return response
 
-    @reauthenticate(auth_error_status=403)
+    @reauthenticate(auth_error_status=[401, 403])
     async def status(self) -> dict:
         """Get machine object model (alias for model in DSF v3.4.6+)."""
         self.logger.debug("status: fetching machine status")
@@ -200,7 +200,7 @@ class DuetSoftwareFramework(DuetAPIBase):
             response = await r.json()
         return response
 
-    @reauthenticate(auth_error_status=403)
+    @reauthenticate(auth_error_status=[401, 403])
     async def code(self, gcode: str, async_exec: bool = False) -> str:
         """Execute G-code on the Duet via DSF.
 
@@ -247,7 +247,7 @@ class DuetSoftwareFramework(DuetAPIBase):
             async for chunk in r.content.iter_chunked(chunk_size):
                 yield chunk
 
-    @reauthenticate(auth_error_status=403)
+    @reauthenticate(auth_error_status=[401, 403])
     async def upload(
         self,
         filepath: str,
@@ -332,7 +332,7 @@ class DuetSoftwareFramework(DuetAPIBase):
                 self.logger.warning(f'Unexpected status {r.status} during upload_stream')
                 raise IOError(f"Upload failed with status {r.status}: {body}")
 
-    @reauthenticate(auth_error_status=403)
+    @reauthenticate(auth_error_status=[401, 403])
     async def delete(self, filepath: str, recursive: bool = False) -> None:
         """Delete a file or directory from the Duet via DSF.
 
@@ -354,7 +354,7 @@ class DuetSoftwareFramework(DuetAPIBase):
             if r.status != 204:
                 self.logger.warning(f'Unexpected status {r.status} during delete')
 
-    @reauthenticate(auth_error_status=403)
+    @reauthenticate(auth_error_status=[401, 403])
     async def fileinfo(self, filepath: str, **kwargs) -> dict:
         """Get parsed file information from DSF.
 
@@ -372,7 +372,7 @@ class DuetSoftwareFramework(DuetAPIBase):
             response = await r.json()
         return response
 
-    @reauthenticate(auth_error_status=403)
+    @reauthenticate(auth_error_status=[401, 403])
     async def move(
         self,
         old_filepath: str,
@@ -401,7 +401,7 @@ class DuetSoftwareFramework(DuetAPIBase):
             if r.status != 204:
                 self.logger.warning(f'Unexpected status {r.status} during move')
 
-    @reauthenticate(auth_error_status=403)
+    @reauthenticate(auth_error_status=[401, 403])
     async def filelist(self, directory: str) -> list:
         """List files in a directory on the Duet via DSF.
 
@@ -419,7 +419,7 @@ class DuetSoftwareFramework(DuetAPIBase):
             response = await r.json()
         return response
 
-    @reauthenticate(auth_error_status=403)
+    @reauthenticate(auth_error_status=[401, 403])
     async def mkdir(self, directory: str) -> None:
         """Create a directory on the Duet via DSF.
 
@@ -436,7 +436,7 @@ class DuetSoftwareFramework(DuetAPIBase):
             if r.status != 204:
                 self.logger.warning(f'Unexpected status {r.status} during mkdir')
 
-    @reauthenticate(auth_error_status=403)
+    @reauthenticate(auth_error_status=[401, 403])
     async def install_plugin(self, content: bytes) -> None:
         """Install a plugin on the Duet via DSF.
 
@@ -456,7 +456,7 @@ class DuetSoftwareFramework(DuetAPIBase):
             if r.status != 204:
                 self.logger.warning(f'Unexpected status {r.status} during install_plugin')
 
-    @reauthenticate(auth_error_status=403)
+    @reauthenticate(auth_error_status=[401, 403])
     async def uninstall_plugin(self, name: str) -> None:
         """Uninstall a plugin from the Duet via DSF.
 
@@ -476,7 +476,7 @@ class DuetSoftwareFramework(DuetAPIBase):
             if r.status != 204:
                 self.logger.warning(f'Unexpected status {r.status} during uninstall_plugin')
 
-    @reauthenticate(auth_error_status=403)
+    @reauthenticate(auth_error_status=[401, 403])
     async def set_plugin_data(self, plugin: str, key: str, value: str) -> None:
         """Set plugin data via DSF.
 
@@ -499,7 +499,7 @@ class DuetSoftwareFramework(DuetAPIBase):
             if r.status != 204:
                 self.logger.warning(f'Unexpected status {r.status} during set_plugin_data')
 
-    @reauthenticate(auth_error_status=403)
+    @reauthenticate(auth_error_status=[401, 403])
     async def start_plugin(self, name: str) -> None:
         """Start a plugin on the Duet via DSF.
 
@@ -518,7 +518,7 @@ class DuetSoftwareFramework(DuetAPIBase):
             if r.status != 204:
                 self.logger.warning(f'Unexpected status {r.status} during start_plugin')
 
-    @reauthenticate(auth_error_status=403)
+    @reauthenticate(auth_error_status=[401, 403])
     async def stop_plugin(self, name: str) -> None:
         """Stop a plugin on the Duet via DSF.
 

@@ -136,7 +136,7 @@ async def test_reauthenticate_auth_error_reconnects(api):
     call_count = 0
     api.reconnect = AsyncMock()
 
-    @reauthenticate(retries=3, auth_error_status=401)
+    @reauthenticate(retries=3, auth_error_status=[401])
     async def method(self):
         nonlocal call_count
         call_count += 1
