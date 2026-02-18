@@ -1,4 +1,4 @@
-simplyprint-ws-client==1.0.1rc42
+simplyprint-ws-client==1.0.1rc44
 aiohttp
 attrs
 requests
