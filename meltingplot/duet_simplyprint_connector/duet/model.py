@@ -378,7 +378,7 @@ class DuetPrinter():
                 depth=2,
                 frequently=False,
                 include_null=True,
-                verbose=True,
+                verbose=False,
             )
             self.om[key] = changed_obj['result']
 
@@ -430,7 +430,7 @@ class DuetPrinter():
                 depth=99,
                 frequently=True,
                 include_null=True,
-                verbose=True,
+                verbose=False,
             )
             if response is None or 'result' not in response:
                 return
