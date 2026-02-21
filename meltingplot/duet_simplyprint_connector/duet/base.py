@@ -15,6 +15,13 @@ from typing import AsyncIterable, BinaryIO, Callable, Optional
 import aiohttp
 import attr
 
+_TRANSIENT_ERRORS = (
+    TimeoutError,
+    asyncio.TimeoutError,
+    aiohttp.ClientPayloadError,
+    aiohttp.ClientConnectionError,
+)
+
 
 def reauthenticate(retries: int = 3, auth_error_status: list[int] = None):
     """Reauthenticate API requests.
@@ -37,30 +44,19 @@ def reauthenticate(retries: int = 3, auth_error_status: list[int] = None):
             while remaining > 0:
                 try:
                     return await f(self, *args, **kwargs)
-                except (
-                    TimeoutError,
-                    asyncio.TimeoutError,
-                    aiohttp.ClientPayloadError,
-                    aiohttp.ClientConnectionError,
-                ) as e:
-                    self.logger.error(f"{e} - retry")
+                except _TRANSIENT_ERRORS as e:
                     remaining -= 1
-                    delay = min(2 * (retries - remaining + 1), self.RETRY_DELAY_MAX)
-                    await asyncio.sleep(delay)
+                    self.logger.error(f"{e} - retry")
                 except aiohttp.ClientResponseError as e:
                     remaining -= 1
-                    if e.status in self.callbacks:
-                        await self.callbacks[e.status](e)
-                    elif e.status in auth_error_status:
-                        self.logger.error(
-                            f'Auth error ({e.status}) while requesting {e.request_info!s} - retry',
-                        )
-                        delay = min(2 * (retries - remaining + 1), self.RETRY_DELAY_MAX)
-                        await asyncio.sleep(delay)
-                        await self.reconnect()
-                        remaining = retries
-                    else:
-                        raise e
+                    remaining = await self._handle_response_error(
+                        e,
+                        remaining,
+                        retries,
+                        auth_error_status,
+                    )
+                delay = min(2 * (retries - remaining + 1), self.RETRY_DELAY_MAX)
+                await asyncio.sleep(delay)
             raise TimeoutError(f'Retried {retries} times to reauthenticate.')
 
         return inner
@@ -108,6 +104,34 @@ class DuetAPIBase(abc.ABC):
         if self.session is not None and not self.session.closed:
             await self.session.close()
             self.session = None
+
+    async def _handle_response_error(
+        self,
+        error,
+        remaining,
+        retries,
+        auth_error_status,
+    ):
+        """Handle an HTTP response error during a retried request.
+
+        Returns the updated remaining retry count.
+        Raises the error if it is not retriable.
+        """
+        if error.status in self.callbacks:
+            await self.callbacks[error.status](error)
+            return remaining
+        if error.status not in auth_error_status:
+            raise error
+        self.logger.error(
+            f'Auth error ({error.status}) while requesting'
+            f' {error.request_info!s} - retry',
+        )
+        try:
+            await self.reconnect()
+            return retries
+        except _TRANSIENT_ERRORS as e:
+            self.logger.error(f"Reconnect failed: {e}")
+            return remaining
 
     async def _ensure_session(self) -> None:
         """Ensure a valid session."""
