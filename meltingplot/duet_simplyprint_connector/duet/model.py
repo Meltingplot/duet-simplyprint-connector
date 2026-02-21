@@ -460,17 +460,7 @@ class DuetPrinter():
 
     async def _http_503_callback(self, error: aiohttp.ClientResponseError):
         """503 callback."""
-        if self.sbc:
-            await asyncio.sleep(5)
-            return
-
-        # there are no more than 10 clients connected to the duet board
-        for _ in range(10):
-            reply = await self.api.rr_reply(nocache=True)
-            if reply == '':
-                break
-            self._reply = reply
-        self._wait_for_reply.set()
+        await asyncio.sleep(5)
 
     def _schedule_ws_retry(self) -> None:
         """Schedule WebSocket reconnection with exponential backoff."""
