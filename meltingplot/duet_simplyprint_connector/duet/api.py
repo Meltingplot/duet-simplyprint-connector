@@ -39,6 +39,7 @@ class RepRapFirmware(DuetAPIBase):
         # may not be able to respond properly. In this case,
         # HTTP status code 503 is returned.
         self.logger.error(f'Duet busy {e.request_info!s} - retry')
+        self.logger.debug(f"Received HTTP 503 for {e.request_info!s}")
         await asyncio.sleep(5)
 
     async def reconnect(self) -> dict:
@@ -58,7 +59,9 @@ class RepRapFirmware(DuetAPIBase):
             }
 
             if self.session is None or self.session.closed:
+                connector = aiohttp.TCPConnector(force_close=True)
                 self.session = aiohttp.ClientSession(
+                    connector=connector,
                     timeout=aiohttp.ClientTimeout(total=self.http_timeout),
                     raise_for_status=True,
                 )
