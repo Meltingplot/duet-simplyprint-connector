@@ -4,6 +4,7 @@ import asyncio
 import csv
 import io
 import logging
+import os
 import time
 from copy import deepcopy
 from enum import auto
@@ -17,6 +18,7 @@ from strenum import CamelCaseStrEnum, StrEnum
 from .api import RepRapFirmware
 from .base import DuetAPIBase
 from .dsf import DuetSoftwareFramework
+from .dsf_socket import DEFAULT_SOCKET_PATH, DuetControlSocket
 
 
 def merge_dictionary(source, destination):
@@ -119,6 +121,7 @@ class DuetPrinter():
     logger = field(type=logging.Logger, factory=logging.getLogger)
     events = field(type=AsyncIOEventEmitter, factory=AsyncIOEventEmitter)
     sbc = field(type=bool, default=False)
+    socket_path = field(type=str, default=DEFAULT_SOCKET_PATH)
     _reply = field(type=str, default=None)
     _wait_for_reply = field(type=asyncio.Event, factory=asyncio.Event)
     _ws_task = field(type=Optional[asyncio.Task], default=None)
@@ -154,24 +157,57 @@ class DuetPrinter():
             self.events.emit(DuetModelEvents.state, old_state)
 
     async def connect(self) -> None:
-        """Connect the printer."""
-        result = await self.api.connect()
-        if 'isEmulated' in result:
-            self.sbc = True
-            # Switch to DSF API, reusing connection parameters
-            dsf_api = DuetSoftwareFramework(
-                address=self.api.address,
-                password=self.api.password,
-                session=self.api.session,
-                logger=self.api.logger,
-            )
-            self.api.session = None  # Prevent session close
-            self.api = dsf_api
-            await self.api.connect()  # Establish DSF session key for WebSocket auth
-            self.api.callbacks[503] = self._http_503_callback
+        """Connect the printer.
+
+        Connection priority:
+        1. DCS Unix socket (direct, when running on same SBC)
+        2. DSF HTTP API (SBC mode via network, detected by isEmulated)
+        3. RepRapFirmware HTTP API (standalone mode)
+        """
+        if await self._try_socket_connection():
+            self.logger.info("Connected via DCS Unix socket")
+        else:
+            result = await self.api.connect()
+            if 'isEmulated' in result:
+                self.sbc = True
+                # Switch to DSF HTTP API, reusing connection parameters
+                dsf_api = DuetSoftwareFramework(
+                    address=self.api.address,
+                    password=self.api.password,
+                    session=self.api.session,
+                    logger=self.api.logger,
+                )
+                self.api.session = None  # Prevent session close
+                self.api = dsf_api
+                await self.api.connect()
+                self.api.callbacks[503] = self._http_503_callback
         result = await self._fetch_full_status()
         self.om = result['result'] if 'result' in result else result
         self.events.emit(DuetModelEvents.connect)
+
+    async def _try_socket_connection(self) -> bool:
+        """Attempt to connect via the DCS Unix socket.
+
+        :return: True if socket connection succeeded
+        """
+        if not os.path.exists(self.socket_path):
+            return False
+
+        self.logger.info(f"DCS socket found at {self.socket_path}, attempting direct connection")
+        try:
+            socket_api = DuetControlSocket(
+                address='socket://' + self.socket_path,
+                socket_path=self.socket_path,
+                logger=self.api.logger,
+            )
+            await socket_api.connect()
+            await self.api.close()
+            self.api = socket_api
+            self.sbc = True
+            return True
+        except OSError as e:
+            self.logger.warning(f"DCS socket connection failed: {e}, falling back to HTTP")
+            return False
 
     async def close(self) -> None:
         """Close the printer."""
@@ -183,6 +219,8 @@ class DuetPrinter():
 
     def connected(self) -> bool:
         """Check if the printer is connected."""
+        if isinstance(self.api, DuetControlSocket):
+            return self.api._cmd_writer is not None
         if self.api.session is None or self.api.session.closed:
             return False
         return True
