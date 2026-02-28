@@ -88,8 +88,9 @@ class DuetAPIBase(abc.ABC):
 
     @address.validator
     def _validate_address(self, attribute, value):
-        if not value.startswith('http://') and not value.startswith('https://'):
-            raise ValueError('Address must start with http:// or https://')
+        valid_schemes = ('http://', 'https://', 'socket://')
+        if not any(value.startswith(s) for s in valid_schemes):
+            raise ValueError('Address must start with http://, https://, or socket://')
 
     async def connect(self) -> dict:
         """Connect to the Duet."""
