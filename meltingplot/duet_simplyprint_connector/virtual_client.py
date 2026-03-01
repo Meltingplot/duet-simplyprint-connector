@@ -139,6 +139,7 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
 
     async def _duet_on_connect(self) -> None:
         """Connect to the Duet board."""
+        self._printer_timeout = time.time() + 60 * 5
         if self.config.in_setup:
             await self.duet.gcode(
                 f'M291 P"Code: {self.config.short_id}" R"Simplyprint.io Setup" S2',
@@ -197,6 +198,7 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
 
     async def _duet_on_objectmodel(self, old_om) -> None:
         """Handle Objectmodel changes."""
+        self._printer_timeout = time.time() + 60 * 5
         await self._update_printer_status()
         await self._update_filament_sensor()
         await self._mesh_compensation_status(old_om=old_om)
@@ -223,7 +225,6 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
                     await self.duet.close()
                 await self._ensure_duet_connection()
                 await self.duet.tick()
-                self._printer_timeout = time.time() + 60 * 5
                 await asyncio.sleep(0.5)
             except (TimeoutError, asyncio.TimeoutError):
                 continue
