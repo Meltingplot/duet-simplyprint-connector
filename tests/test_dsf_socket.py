@@ -35,9 +35,25 @@ class TestResolveDsfPath:
         result = _resolve_dsf_path('0:/sys/config.g', '/opt/dsf/sd')
         assert result == '/opt/dsf/sd/sys/config.g'
 
+    def test_resolve_volume_1(self):
+        result = _resolve_dsf_path('1:/gcodes/test.gcode', '/opt/dsf/sd')
+        assert result == '/opt/dsf/sd/gcodes/test.gcode'
+
+    def test_resolve_volume_2(self):
+        result = _resolve_dsf_path('2:/gcodes/test.gcode', '/opt/dsf/sd')
+        assert result == '/opt/dsf/sd/gcodes/test.gcode'
+
+    def test_resolve_multi_digit_volume(self):
+        result = _resolve_dsf_path('10:/gcodes/test.gcode', '/opt/dsf/sd')
+        assert result == '/opt/dsf/sd/gcodes/test.gcode'
+
     def test_resolve_traversal_blocked(self):
         with pytest.raises(ValueError, match='Path traversal detected'):
             _resolve_dsf_path('0:/../../etc/passwd', '/opt/dsf/sd')
+
+    def test_resolve_traversal_blocked_other_volume(self):
+        with pytest.raises(ValueError, match='Path traversal detected'):
+            _resolve_dsf_path('10:/../../etc/passwd', '/opt/dsf/sd')
 
 
 # --- Socket receiver tests ---

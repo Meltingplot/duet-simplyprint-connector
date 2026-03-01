@@ -11,6 +11,7 @@ import asyncio
 import json
 import os
 import shutil
+from pathlib import Path, PurePosixPath
 from typing import AsyncIterable, AsyncIterator, BinaryIO, Callable, Optional
 
 import attr
@@ -33,9 +34,6 @@ FILE_IO_CHUNK_SIZE = 65536
 # Minimum DCS API version required
 MIN_DCS_API_VERSION = 8
 
-# RRF volume prefix length ('0:')
-VOLUME_PREFIX_LENGTH = 2
-
 # Progress percentage upper bound
 PROGRESS_MAX = 100.0
 
@@ -53,19 +51,20 @@ def _resolve_dsf_path(filepath: str, base_dir: str) -> str:
     :param base_dir: DSF SD card base directory (e.g. '/opt/dsf/sd')
     :return: Resolved absolute filesystem path
     """
-    # Strip the volume prefix '0:/' or '0:' if present
-    if filepath.startswith('0:'):
-        filepath = filepath[VOLUME_PREFIX_LENGTH:]
-    # Ensure leading slash for consistent joining
-    if filepath.startswith('/'):
-        filepath = filepath[1:]
-    resolved = os.path.join(base_dir, filepath)
-    # Prevent directory traversal
-    resolved = os.path.realpath(resolved)
-    base_real = os.path.realpath(base_dir)
-    if not resolved.startswith(base_real):
+    parts = PurePosixPath(filepath).parts
+    # Strip any RRF volume prefix (e.g. '0:', '1:', '10:')
+    if parts and parts[0][0].isdigit():
+        parts = parts[1:]
+    # Strip leading /
+    if parts and parts[0] == '/':
+        parts = parts[1:]
+    relative = PurePosixPath(*parts) if parts else PurePosixPath()
+
+    base = Path(base_dir).resolve()
+    resolved = (base / relative).resolve()
+    if not resolved.is_relative_to(base):
         raise ValueError(f'Path traversal detected: {filepath}')
-    return resolved
+    return str(resolved)
 
 
 class _SocketReceiver:
