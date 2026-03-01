@@ -9,6 +9,12 @@ except ImportError:
 
 import attr
 
+# Column at which inline comments are aligned
+COMMENT_ALIGNMENT_COLUMN = 60
+
+# Indentation threshold for continuation comments
+CONTINUATION_INDENT_THRESHOLD = 4
+
 
 @attr.s
 class GCodeCommand():
@@ -41,17 +47,17 @@ class GCodeCommand():
         if len(self.comment) > 1:
             fp.write(gcode_line.rstrip())
             if len(self.code) > 0:
-                fp.write(' ; '.rjust(max(1, 60 - len(gcode_line))))
+                fp.write(' ; '.rjust(max(1, COMMENT_ALIGNMENT_COLUMN - len(gcode_line))))
             fp.write(self.comment[0])
             fp.write('\n')
             for c in self.comment[1:]:
-                fp.write('; '.rjust(60))
+                fp.write('; '.rjust(COMMENT_ALIGNMENT_COLUMN))
                 fp.write(c)
                 fp.write('\n')
         elif len(self.comment) == 1:
             fp.write(gcode_line.rstrip())
             if len(self.code) > 0:
-                fp.write(' ; '.rjust(max(1, 60 - len(gcode_line))))
+                fp.write(' ; '.rjust(max(1, COMMENT_ALIGNMENT_COLUMN - len(gcode_line))))
             else:
                 fp.write(';')
             fp.write(self.comment[0])
@@ -95,7 +101,7 @@ class GCodeBlock():
             line_comment = gcode_match.group(2)
 
             if line_comment != '':
-                if line_gcode == '' and (len(line) - len(line.lstrip())) >= 4:
+                if line_gcode == '' and (len(line) - len(line.lstrip())) >= CONTINUATION_INDENT_THRESHOLD:
                     try:
                         self.code[-1].comment.append(line_comment.strip())
                     except IndexError:

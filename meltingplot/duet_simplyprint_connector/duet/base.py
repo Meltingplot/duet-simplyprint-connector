@@ -34,7 +34,7 @@ def reauthenticate(retries: int = 3, auth_error_status: list[int] = None):
     :param auth_error_status: HTTP status code indicating auth failure
                               (401 for RRF, 403 for DSF)
     """
-    auth_error_status = auth_error_status or [401]
+    auth_error_status = auth_error_status or DuetAPIBase.DEFAULT_AUTH_ERROR_STATUS
 
     def decorator(f):
 
@@ -55,7 +55,7 @@ def reauthenticate(retries: int = 3, auth_error_status: list[int] = None):
                         retries,
                         auth_error_status,
                     )
-                delay = min(2 * (retries - remaining + 1), self.RETRY_DELAY_MAX)
+                delay = min(self.BACKOFF_MULTIPLIER * (retries - remaining + 1), self.RETRY_DELAY_MAX)
                 await asyncio.sleep(delay)
             raise TimeoutError(f'Retried {retries} times to reauthenticate.')
 
@@ -69,12 +69,15 @@ class DuetAPIBase(abc.ABC):
     """Abstract base class for Duet API backends."""
 
     # Class constants
-    DEFAULT_SESSION_TIMEOUT = 8000
-    DEFAULT_HTTP_TIMEOUT = 15
+    DEFAULT_SESSION_TIMEOUT = 8000  # milliseconds
+    DEFAULT_HTTP_TIMEOUT = 15  # seconds
     DEFAULT_HTTP_RETRIES = 3
-    RETRY_DELAY_MAX = 10
+    RETRY_DELAY_MAX = 10  # seconds
+    BACKOFF_MULTIPLIER = 2
     UPLOAD_TIMEOUT = 60 * 30  # 30 minutes
-    UPLOAD_CHUNK_SIZE = 8192
+    UPLOAD_CHUNK_SIZE = 8192  # bytes
+    DEFAULT_DOWNLOAD_CHUNK_SIZE = 1024  # bytes
+    DEFAULT_AUTH_ERROR_STATUS = [401]
 
     address = attr.ib(type=str, default="http://10.42.0.2")
     password = attr.ib(type=str, default="reprap")
@@ -152,7 +155,7 @@ class DuetAPIBase(abc.ABC):
     async def download(
         self,
         filepath: str,
-        chunk_size: Optional[int] = 1024,
+        chunk_size: Optional[int] = DEFAULT_DOWNLOAD_CHUNK_SIZE,
     ) -> AsyncIterable:
         """Download a file from the printer.
 

@@ -17,7 +17,24 @@ from .base import DuetAPIBase, reauthenticate
 class RepRapFirmware(DuetAPIBase):
     """RepRapFirmware API Class."""
 
-    REPLY_CACHE_TTL = 10
+    REPLY_CACHE_TTL = 10  # seconds
+
+    # HTTP status codes
+    HTTP_UNAUTHORIZED = 401
+    HTTP_BAD_GATEWAY = 502
+    HTTP_SERVICE_UNAVAILABLE = 503
+
+    # Delay before retrying after HTTP errors (seconds)
+    HTTP_ERROR_RETRY_DELAY = 5
+
+    # Default model query depth
+    DEFAULT_MODEL_DEPTH = 99
+
+    # CRC32 bitmask for unsigned 32-bit result
+    CRC32_MASK = 0xffffffff
+
+    # Progress percentage upper bound
+    PROGRESS_MAX = 100.0
 
     password = attr.ib(type=str, default="meltingplot")
     _last_reply = attr.ib(type=str, default='')
@@ -25,14 +42,14 @@ class RepRapFirmware(DuetAPIBase):
 
     def __attrs_post_init__(self):
         """Post init."""
-        self.callbacks[502] = self._default_http_502_bad_gateway_callback
-        self.callbacks[503] = self._default_http_503_busy_callback
+        self.callbacks[self.HTTP_BAD_GATEWAY] = self._default_http_502_bad_gateway_callback
+        self.callbacks[self.HTTP_SERVICE_UNAVAILABLE] = self._default_http_503_busy_callback
 
     async def _default_http_502_bad_gateway_callback(self, e):
         # a reverse proxy may return HTTP status code 502 if the Duet is not available
         # due to open socket limit. In this case, we retry the request.
         self.logger.error(f'Duet bad gateway {e.request_info!s} - retry')
-        await asyncio.sleep(5)
+        await asyncio.sleep(self.HTTP_ERROR_RETRY_DELAY)
 
     async def _default_http_503_busy_callback(self, e):
         # Besides, RepRapFirmware may run short on memory and
@@ -40,7 +57,7 @@ class RepRapFirmware(DuetAPIBase):
         # HTTP status code 503 is returned.
         self.logger.error(f'Duet busy {e.request_info!s} - retry')
         self.logger.debug(f"Received HTTP 503 for {e.request_info!s}")
-        await asyncio.sleep(5)
+        await asyncio.sleep(self.HTTP_ERROR_RETRY_DELAY)
 
     async def reconnect(self) -> dict:
         """Reconnect to the Duet."""
@@ -81,7 +98,7 @@ class RepRapFirmware(DuetAPIBase):
                         real_url=url,
                     ),
                     history=(),
-                    status=401,
+                    status=self.HTTP_UNAUTHORIZED,
                     message=f'Authentication failed: {json_response}',
                 )
 
@@ -112,7 +129,7 @@ class RepRapFirmware(DuetAPIBase):
         verbose: Optional[bool] = False,
         include_null: Optional[bool] = False,
         include_obsolete: Optional[bool] = False,
-        depth: Optional[int] = 99,
+        depth: Optional[int] = DEFAULT_MODEL_DEPTH,
         array: Optional[int] = 0,
     ) -> dict:
         """rr_model Get Machine Model."""
@@ -240,10 +257,10 @@ class RepRapFirmware(DuetAPIBase):
             params['time'] = last_modified.isoformat(timespec='seconds')
 
         try:
-            checksum = crc32(content) & 0xffffffff
+            checksum = crc32(content) & self.CRC32_MASK
         except TypeError:
             content = content.encode('utf-8')
-            checksum = crc32(content) & 0xffffffff
+            checksum = crc32(content) & self.CRC32_MASK
 
         params['crc32'] = f'{checksum:08x}'
 
@@ -278,7 +295,7 @@ class RepRapFirmware(DuetAPIBase):
         # Calculate CRC32 checksum by reading entire file
         checksum = 0
         while chunk := file.read(self.UPLOAD_CHUNK_SIZE):
-            checksum = crc32(chunk, checksum) & 0xffffffff
+            checksum = crc32(chunk, checksum) & self.CRC32_MASK
 
         filesize = file.tell()
         file.seek(0)
@@ -289,8 +306,8 @@ class RepRapFirmware(DuetAPIBase):
             while chunk := file.read(self.UPLOAD_CHUNK_SIZE):
                 if progress:
                     progress(
-                        max(0.0, min(100.0,
-                                     file.tell() / filesize * 100.0)),
+                        max(0.0, min(self.PROGRESS_MAX,
+                                     file.tell() / filesize * self.PROGRESS_MAX)),
                     )
                 if not chunk:
                     break
