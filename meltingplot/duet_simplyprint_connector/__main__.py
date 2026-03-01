@@ -6,6 +6,7 @@ import socket
 from urllib.parse import urlparse
 
 import click
+
 from simplyprint_ws_client.const import IS_TESTING
 from simplyprint_ws_client.core.app import ClientApp
 from simplyprint_ws_client.core.config import ConfigManagerType

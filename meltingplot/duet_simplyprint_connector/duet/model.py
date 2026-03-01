@@ -11,8 +11,11 @@ from enum import auto
 from typing import AsyncIterable, BinaryIO, Callable, Optional
 
 import aiohttp
+
 from attr import define, field
+
 from pyee.asyncio import AsyncIOEventEmitter
+
 from strenum import CamelCaseStrEnum, StrEnum
 
 from .api import RepRapFirmware

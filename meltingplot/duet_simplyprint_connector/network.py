@@ -5,8 +5,9 @@ from typing import NamedTuple
 
 import psutil
 
-# IP address used for local IP detection (SimplyPrint server)
-SIMPLYPRINT_IP = "168.119.98.102"
+# Arbitrary routable IP used to determine the local network interface.
+# No traffic is actually sent; the OS just picks the right source address.
+IP_DETECTION_IP = "168.119.98.102"
 IP_DETECTION_PORT = 80
 LOCALHOST_IP = '127.0.0.1'
 
@@ -26,7 +27,7 @@ def get_local_ip_and_mac() -> NetworkInfo:
         # doesn't even have to be reachable
         # we just need to know the local ip
         # so we can send it to simplyprint
-        s.connect((SIMPLYPRINT_IP, IP_DETECTION_PORT))
+        s.connect((IP_DETECTION_IP, IP_DETECTION_PORT))
         local_ip = s.getsockname()[0]
     except socket.error:
         local_ip = LOCALHOST_IP

@@ -15,7 +15,9 @@ from dataclasses import dataclass
 from typing import Optional
 
 import aiohttp
+
 import psutil
+
 from simplyprint_ws_client.const import VERSION as SP_VERSION
 from simplyprint_ws_client.core.client import ClientConfigChangedEvent, DefaultClient
 from simplyprint_ws_client.core.config import PrinterConfig
@@ -40,6 +42,7 @@ from simplyprint_ws_client.core.ws_protocol.messages import (
 from simplyprint_ws_client.shared.camera.mixin import ClientCameraMixin
 from simplyprint_ws_client.shared.files.file_download import FileDownload
 from simplyprint_ws_client.shared.hardware.physical_machine import PhysicalMachine
+
 from yarl import URL
 
 from . import __version__
