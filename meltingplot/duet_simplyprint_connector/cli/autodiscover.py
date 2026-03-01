@@ -123,7 +123,7 @@ async def get_cookie(duet: RepRapFirmware) -> str:
 
 def normalize_url(url: str) -> str:
     """Sanitize the URL."""
-    if url.startswith('http://') or url.startswith('https://'):
+    if url.startswith(('http://', 'https://', 'file://')):
         return url
     return f'http://{url}'
 
@@ -256,6 +256,9 @@ class AutoDiscover():
 
         configs = self.app.config_manager.get_all()
         for config in configs:
+            if config.duet_uri and config.duet_uri.startswith('file://'):
+                self.app.logger.info(f'Skipping {config.duet_unique_id} - local socket connection.')
+                continue
             if config.duet_unique_id in clients:
                 self.app.logger.info(f'Found existing config for {config.duet_unique_id}. Updating.')
 
