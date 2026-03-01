@@ -44,6 +44,23 @@ simplyprint start
 # Or: python -m meltingplot.duet_simplyprint_connector start
 ```
 
+## Pre-Commit Validation
+
+Before every commit, run these three checks in order. All must pass before committing:
+
+```bash
+# 1. Check formatting (must produce no diff)
+yapf --style .style.yapf -r --diff meltingplot/
+
+# 2. Lint (must exit 0)
+flake8 --statistics meltingplot
+
+# 3. Run tests (must all pass)
+pytest --cov-config .coveragerc --cov meltingplot tests/ -vv
+```
+
+If any step fails, fix the issue and re-run the full pipeline before committing.
+
 ## Code Style
 
 - Max line length: 120 characters (flake8) / 119 (yapf)
