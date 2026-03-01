@@ -942,8 +942,12 @@ async def test_ensure_duet_connection_catches_client_connection_error(virtual_cl
 
 
 @pytest.mark.asyncio
-async def test_duet_printer_task_sets_offline_on_timeout(virtual_client):
-    """Test _duet_printer_task sets OFFLINE when TimeoutError is raised."""
+async def test_duet_printer_task_keeps_status_on_transient_timeout(virtual_client):
+    """Test _duet_printer_task does not set OFFLINE on a transient TimeoutError.
+
+    A single timeout should not mark the printer offline. The printer
+    should only go offline after the 5-minute _printer_timeout expires.
+    """
     virtual_client.printer = Mock()
     virtual_client.printer.status = PrinterStatus.OPERATIONAL
     virtual_client._is_stopped = False
@@ -960,7 +964,7 @@ async def test_duet_printer_task_sets_offline_on_timeout(virtual_client):
     task = await virtual_client._duet_printer_task()
     await task
 
-    assert virtual_client.printer.status == PrinterStatus.OFFLINE
+    assert virtual_client.printer.status == PrinterStatus.OPERATIONAL
 
 
 @pytest.mark.asyncio
