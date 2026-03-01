@@ -10,8 +10,8 @@ filesystem I/O for file uploads and downloads on the SBC.
 import asyncio
 import json
 import os
-import re
 import shutil
+from pathlib import Path, PurePosixPath
 from typing import AsyncIterable, AsyncIterator, BinaryIO, Callable, Optional
 
 import attr
@@ -34,9 +34,6 @@ FILE_IO_CHUNK_SIZE = 65536
 # Minimum DCS API version required
 MIN_DCS_API_VERSION = 8
 
-# Regex matching RRF volume prefixes like '0:', '1:', '10:', etc.
-_VOLUME_PREFIX_RE = re.compile(r'^\d+:')
-
 # Progress percentage upper bound
 PROGRESS_MAX = 100.0
 
@@ -55,17 +52,20 @@ def _resolve_dsf_path(filepath: str, base_dir: str) -> str:
     :return: Resolved absolute filesystem path
     """
     # Strip any RRF volume prefix (e.g. '0:', '1:', '10:')
-    filepath = _VOLUME_PREFIX_RE.sub('', filepath)
-    # Ensure leading slash for consistent joining
-    if filepath.startswith('/'):
-        filepath = filepath[1:]
-    resolved = os.path.join(base_dir, filepath)
-    # Prevent directory traversal
-    resolved = os.path.realpath(resolved)
-    base_real = os.path.realpath(base_dir)
-    if not resolved.startswith(base_real):
+    if ':' in filepath:
+        prefix, rest = filepath.split(':', 1)
+        if prefix.isdigit():
+            filepath = rest
+
+    relative = PurePosixPath(filepath)
+    if relative.root:
+        relative = relative.relative_to('/')
+
+    base = Path(base_dir).resolve()
+    resolved = (base / relative).resolve()
+    if not resolved.is_relative_to(base):
         raise ValueError(f'Path traversal detected: {filepath}')
-    return resolved
+    return str(resolved)
 
 
 class _SocketReceiver:
