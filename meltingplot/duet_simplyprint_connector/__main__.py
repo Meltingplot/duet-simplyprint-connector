@@ -6,7 +6,6 @@ import socket
 from urllib.parse import urlparse
 
 import click
-
 from simplyprint_ws_client.const import IS_TESTING
 from simplyprint_ws_client.core.app import ClientApp
 from simplyprint_ws_client.core.config import ConfigManagerType
@@ -87,7 +86,7 @@ def run_app(autodiscover, app, profile, watchdog: Watchdog):
         for network, pwd in networks.items():
             click.echo(
                 f"Scanning existing network: {network}"
-                f" with password {pwd[:PASSWORD_VISIBLE_CHARS]}{'*' * (len(pwd) - PASSWORD_VISIBLE_CHARS)}"
+                f" with password {pwd[:PASSWORD_VISIBLE_CHARS]}{'*' * (len(pwd) - PASSWORD_VISIBLE_CHARS)}",
             )
             if ':' in network:
                 autodiscover._autodiscover(password=pwd, ipv6_range=network, ipv4_range='127.0.0.1/32')

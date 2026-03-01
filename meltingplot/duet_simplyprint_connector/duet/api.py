@@ -8,7 +8,6 @@ from typing import AsyncIterable, BinaryIO, Callable, Optional
 from zlib import crc32
 
 import aiohttp
-
 import attr
 
 from .base import DuetAPIBase, reauthenticate

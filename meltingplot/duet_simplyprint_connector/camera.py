@@ -4,14 +4,12 @@ import time
 from typing import ClassVar, Iterator, Optional
 
 import requests
-
 from simplyprint_ws_client.shared.camera.base import (
     BaseCameraProtocol,
     CameraProtocolConnectionError,
     CameraProtocolPollingMode,
     FrameT,
 )
-
 from yarl import URL
 
 JPEG_SOI = b'\xff\xd8'

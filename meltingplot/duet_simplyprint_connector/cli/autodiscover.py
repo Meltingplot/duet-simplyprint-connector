@@ -24,9 +24,7 @@ import json
 import urllib.parse
 
 import aiohttp
-
 import click
-
 from simplyprint_ws_client.core.app import ClientApp
 
 from ..duet.api import RepRapFirmware
