@@ -482,12 +482,14 @@ class DuetControlSocket(DuetAPIBase):
                 return result
             for entry in os.scandir(real_path):
                 stat = entry.stat()
-                result.append({
-                    'type': 'd' if entry.is_dir() else 'f',
-                    'name': entry.name,
-                    'size': stat.st_size if entry.is_file() else 0,
-                    'date': stat.st_mtime,
-                })
+                result.append(
+                    {
+                        'type': 'd' if entry.is_dir() else 'f',
+                        'name': entry.name,
+                        'size': stat.st_size if entry.is_file() else 0,
+                        'date': stat.st_mtime,
+                    }
+                )
             return result
 
         return await loop.run_in_executor(None, _list_dir)
