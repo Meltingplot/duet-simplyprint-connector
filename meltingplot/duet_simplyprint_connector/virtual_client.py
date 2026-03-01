@@ -12,6 +12,7 @@ import sys
 import tempfile
 import time
 from dataclasses import dataclass
+from enum import IntEnum
 from typing import Optional
 
 import aiohttp
@@ -66,6 +67,22 @@ class VirtualConfig(PrinterConfig):
     webcam_uri: Optional[str] = None
 
 
+class M291Mode(IntEnum):
+    """RepRapFirmware M291 message box modes (S parameter).
+
+    Modes >= BLOCKING_OK are blocking and require M292 to acknowledge.
+    """
+
+    NON_BLOCKING = 0
+    CLOSE = 1
+    BLOCKING_OK = 2
+    OK_CANCEL = 3
+    CHOICES = 4
+    INTEGER_INPUT = 5
+    FLOAT_INPUT = 6
+    STRING_INPUT = 7
+
+
 class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfig]):
     """A Websocket client for the SimplyPrint.io Service."""
 
@@ -100,16 +117,6 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
 
     # Job info
     JOB_STARTED_DURATION_THRESHOLD = 10  # seconds
-
-    # M291 message box modes (RepRapFirmware protocol)
-    M291_MODE_CLOSE = 1
-    M291_MODE_OK = 2
-    M291_MODE_OK_CANCEL = 3
-    M291_MODE_CHOICES = 4
-    M291_MODE_INTEGER_INPUT = 5
-    M291_MODE_FLOAT_INPUT = 6
-    M291_MODE_STRING_INPUT = 7
-    M291_BLOCKING_MODE_THRESHOLD = 2
 
     duet: DuetPrinter
     watchdog: Watchdog
@@ -718,8 +725,7 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
                 actions = self._messagebox_actions(mode, choices, default)
                 # the UI for Warning and Error is not made for actions
                 severity = (
-                    NotificationEventSeverity.ERROR
-                    if mode >= self.M291_BLOCKING_MODE_THRESHOLD else NotificationEventSeverity.INFO
+                    NotificationEventSeverity.ERROR if mode >= M291Mode.BLOCKING_OK else NotificationEventSeverity.INFO
                 )
 
                 self.logger.debug(f"Message box actions: {list(actions.keys())}")
@@ -746,24 +752,24 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
             *retained_events,
         )
 
-    @classmethod
-    def _messagebox_actions(cls, mode, choices, default):
+    @staticmethod
+    def _messagebox_actions(mode, choices, default):
         """Build notification actions for a Duet M291 message box mode."""
         actions = {}
-        if mode == cls.M291_MODE_CLOSE:
+        if mode == M291Mode.CLOSE:
             actions["close"] = NotificationEventButtonAction(label="Close")
-        elif mode == cls.M291_MODE_OK:
+        elif mode == M291Mode.BLOCKING_OK:
             actions["ok"] = NotificationEventButtonAction(label="OK")
-        elif mode == cls.M291_MODE_OK_CANCEL:
+        elif mode == M291Mode.OK_CANCEL:
             actions["ok"] = NotificationEventButtonAction(label="OK")
             actions["cancel"] = NotificationEventButtonAction(label="Cancel")
-        elif mode == cls.M291_MODE_CHOICES and choices:
+        elif mode == M291Mode.CHOICES and choices:
             for idx, choice in enumerate(choices):
                 actions[f"choice_{idx}"] = NotificationEventButtonAction(label=choice)
-        elif mode in (cls.M291_MODE_INTEGER_INPUT, cls.M291_MODE_FLOAT_INPUT) and default is not None:
+        elif mode in (M291Mode.INTEGER_INPUT, M291Mode.FLOAT_INPUT) and default is not None:
             actions["default"] = NotificationEventButtonAction(label=f"Use default ({default})")
             actions["cancel"] = NotificationEventButtonAction(label="Cancel")
-        elif mode == cls.M291_MODE_STRING_INPUT and default is not None:
+        elif mode == M291Mode.STRING_INPUT and default is not None:
             actions["default"] = NotificationEventButtonAction(label=f'Use default ("{default}")')
             actions["cancel"] = NotificationEventButtonAction(label="Cancel")
         return actions
@@ -804,16 +810,16 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
                 cmd = f"M292 P1{seq_param}"
                 self.logger.info(f"Message box cancelled by user, sending {cmd}")
                 await self.duet.gcode(cmd)
-            elif mode == self.M291_MODE_CHOICES and data.action.startswith("choice_"):
+            elif mode == M291Mode.CHOICES and data.action.startswith("choice_"):
                 choice_idx = data.action.split("_", 1)[1]
                 cmd = f"M292 P0 R{{{choice_idx}}}{seq_param}"
                 self.logger.info(f"Message box choice {choice_idx} selected, sending {cmd}")
                 await self.duet.gcode(cmd)
-            elif mode in (self.M291_MODE_INTEGER_INPUT, self.M291_MODE_FLOAT_INPUT) and data.action == "default":
+            elif mode in (M291Mode.INTEGER_INPUT, M291Mode.FLOAT_INPUT) and data.action == "default":
                 cmd = f"M292 P0 R{{{default}}}{seq_param}"
                 self.logger.info(f"Message box default {default} accepted, sending {cmd}")
                 await self.duet.gcode(cmd)
-            elif mode == self.M291_MODE_STRING_INPUT and data.action == "default":
+            elif mode == M291Mode.STRING_INPUT and data.action == "default":
                 cmd = f'M292 P0 R{{"{default}"}}{seq_param}'
                 self.logger.info(f'Message box default "{default}" accepted, sending {cmd}')
                 await self.duet.gcode(cmd)
