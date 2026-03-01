@@ -67,12 +67,12 @@ class VirtualConfig(PrinterConfig):
 class M291Mode(IntEnum):
     """RepRapFirmware M291 message box modes (S parameter).
 
-    Modes >= BLOCKING_OK are blocking and require M292 to acknowledge.
+    Modes >= OK are blocking and require M292 to acknowledge.
     """
 
-    NON_BLOCKING = 0
+    NONE = 0
     CLOSE = 1
-    BLOCKING_OK = 2
+    OK = 2
     OK_CANCEL = 3
     CHOICES = 4
     INTEGER_INPUT = 5
@@ -721,9 +721,7 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
 
                 actions = self._messagebox_actions(mode, choices, default)
                 # the UI for Warning and Error is not made for actions
-                severity = (
-                    NotificationEventSeverity.ERROR if mode >= M291Mode.BLOCKING_OK else NotificationEventSeverity.INFO
-                )
+                severity = (NotificationEventSeverity.ERROR if mode >= M291Mode.OK else NotificationEventSeverity.INFO)
 
                 self.logger.debug(f"Message box actions: {list(actions.keys())}")
 
@@ -755,7 +753,7 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
         actions = {}
         if mode == M291Mode.CLOSE:
             actions["close"] = NotificationEventButtonAction(label="Close")
-        elif mode == M291Mode.BLOCKING_OK:
+        elif mode == M291Mode.OK:
             actions["ok"] = NotificationEventButtonAction(label="OK")
         elif mode == M291Mode.OK_CANCEL:
             actions["ok"] = NotificationEventButtonAction(label="OK")
