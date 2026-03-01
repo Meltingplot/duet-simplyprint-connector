@@ -10,6 +10,7 @@ filesystem I/O for file uploads and downloads on the SBC.
 import asyncio
 import json
 import os
+import re
 import shutil
 from typing import AsyncIterable, AsyncIterator, BinaryIO, Callable, Optional
 
@@ -33,8 +34,8 @@ FILE_IO_CHUNK_SIZE = 65536
 # Minimum DCS API version required
 MIN_DCS_API_VERSION = 8
 
-# RRF volume prefix length ('0:')
-VOLUME_PREFIX_LENGTH = 2
+# Regex matching RRF volume prefixes like '0:', '1:', '10:', etc.
+_VOLUME_PREFIX_RE = re.compile(r'^\d+:')
 
 # Progress percentage upper bound
 PROGRESS_MAX = 100.0
@@ -53,9 +54,8 @@ def _resolve_dsf_path(filepath: str, base_dir: str) -> str:
     :param base_dir: DSF SD card base directory (e.g. '/opt/dsf/sd')
     :return: Resolved absolute filesystem path
     """
-    # Strip the volume prefix '0:/' or '0:' if present
-    if filepath.startswith('0:'):
-        filepath = filepath[VOLUME_PREFIX_LENGTH:]
+    # Strip any RRF volume prefix (e.g. '0:', '1:', '10:')
+    filepath = _VOLUME_PREFIX_RE.sub('', filepath)
     # Ensure leading slash for consistent joining
     if filepath.startswith('/'):
         filepath = filepath[1:]
