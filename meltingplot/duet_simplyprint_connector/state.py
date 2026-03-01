@@ -37,7 +37,7 @@ duet_state_simplyprint_status_while_printing_mapping = {
 }
 
 
-def map_duet_state_to_printer_status(object_model: dict, is_printing: bool = False) -> None:
+def map_duet_state_to_printer_status(object_model: dict, is_printing: bool = False) -> 'PrinterStatus':
     """Map the Duet state to the printer status."""
     printer_state = object_model.get('state', {}).get('status', 'disconnected')
 

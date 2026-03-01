@@ -1,6 +1,7 @@
 """Tests for the VirtualClient class."""
 
 import asyncio
+import time
 from unittest.mock import AsyncMock, Mock, patch
 
 import aiohttp
@@ -903,3 +904,167 @@ def test_update_network_info(virtual_client):
 
     assert virtual_client.printer.info.local_ip == '192.168.1.10'
     assert virtual_client.printer.info.mac == 'aa:bb:cc:dd:ee:ff'
+
+
+# --- Group H: Printer offline detection ---
+
+
+@pytest.mark.asyncio
+async def test_ensure_duet_connection_catches_bare_timeout_error(virtual_client):
+    """Test _ensure_duet_connection catches bare TimeoutError from reauthenticate."""
+    virtual_client.duet = Mock()
+    virtual_client.duet.connected.return_value = False
+    virtual_client.duet.connect = AsyncMock(
+        side_effect=TimeoutError('Retried 3 times to reauthenticate.'),
+    )
+    virtual_client.duet.close = AsyncMock()
+
+    with pytest.raises(TimeoutError):
+        await virtual_client._ensure_duet_connection()
+
+    virtual_client.duet.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_ensure_duet_connection_catches_client_connection_error(virtual_client):
+    """Test _ensure_duet_connection catches aiohttp.ClientConnectionError."""
+    virtual_client.duet = Mock()
+    virtual_client.duet.connected.return_value = False
+    virtual_client.duet.connect = AsyncMock(
+        side_effect=aiohttp.ClientConnectionError('Connection refused'),
+    )
+    virtual_client.duet.close = AsyncMock()
+
+    with pytest.raises(TimeoutError):
+        await virtual_client._ensure_duet_connection()
+
+    virtual_client.duet.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_duet_printer_task_keeps_status_on_transient_timeout(virtual_client):
+    """Test _duet_printer_task does not set OFFLINE on a transient TimeoutError.
+
+    A single timeout should not mark the printer offline. The printer
+    should only go offline after the 5-minute _printer_timeout expires.
+    """
+    virtual_client.printer = Mock()
+    virtual_client.printer.status = PrinterStatus.OPERATIONAL
+    virtual_client._is_stopped = False
+    virtual_client._printer_timeout = time.time() + 300
+    virtual_client._background_task = set()
+    virtual_client.event_loop = asyncio.get_event_loop()
+
+    async def ensure_connection_fails():
+        virtual_client._is_stopped = True
+        raise TimeoutError('Retried 3 times to reauthenticate.')
+
+    virtual_client._ensure_duet_connection = ensure_connection_fails
+
+    task = await virtual_client._duet_printer_task()
+    await task
+
+    assert virtual_client.printer.status == PrinterStatus.OPERATIONAL
+
+
+@pytest.mark.asyncio
+async def test_duet_printer_task_timeout_sets_offline(virtual_client):
+    """Test _duet_printer_task sets OFFLINE when printer timeout expires."""
+    virtual_client.printer = Mock()
+    virtual_client.printer.status = PrinterStatus.OPERATIONAL
+    virtual_client._is_stopped = False
+    # Set timeout in the past so it triggers immediately
+    virtual_client._printer_timeout = time.time() - 1
+    virtual_client._background_task = set()
+    virtual_client.event_loop = asyncio.get_event_loop()
+    virtual_client.duet = Mock()
+    virtual_client.duet.close = AsyncMock()
+
+    async def ensure_connection_fails():
+        virtual_client._is_stopped = True
+        raise TimeoutError('connection failed')
+
+    virtual_client._ensure_duet_connection = ensure_connection_fails
+
+    task = await virtual_client._duet_printer_task()
+    await task
+
+    assert virtual_client.printer.status == PrinterStatus.OFFLINE
+    virtual_client.duet.close.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_duet_printer_task_tick_without_data_does_not_reset_timeout(virtual_client):
+    """Test that tick() returning without emitting data does not reset the timeout.
+
+    The _printer_timeout should only be reset when the printer actually
+    sends data (via objectmodel or connect events), not when tick()
+    simply returns without error.
+    """
+    virtual_client.printer = Mock()
+    virtual_client.printer.status = PrinterStatus.OPERATIONAL
+    virtual_client._is_stopped = False
+    original_timeout = time.time() + 10  # 10 seconds from now
+    virtual_client._printer_timeout = original_timeout
+    virtual_client._background_task = set()
+    virtual_client.event_loop = asyncio.get_event_loop()
+
+    tick_count = 0
+
+    async def noop_ensure_connection():
+        pass
+
+    async def noop_tick():
+        nonlocal tick_count
+        tick_count += 1
+        if tick_count >= 2:
+            virtual_client._is_stopped = True
+
+    virtual_client._ensure_duet_connection = noop_ensure_connection
+    virtual_client.duet = Mock()
+    virtual_client.duet.close = AsyncMock()
+    virtual_client.duet.tick = noop_tick
+
+    task = await virtual_client._duet_printer_task()
+    await task
+
+    # Timeout must not have been extended beyond the original value
+    assert virtual_client._printer_timeout == original_timeout
+
+
+@pytest.mark.asyncio
+async def test_objectmodel_event_resets_printer_timeout(virtual_client):
+    """Test that receiving objectmodel data resets the _printer_timeout."""
+    virtual_client._printer_timeout = time.time() - 1  # expired
+    virtual_client.printer = Mock()
+    virtual_client.printer.status = PrinterStatus.OPERATIONAL
+    virtual_client.duet = Mock()
+    virtual_client.duet.om = {'state': {'status': 'idle'}, 'job': {'file': {}}}
+    virtual_client.duet.events = Mock()
+
+    with patch.object(virtual_client, '_update_printer_status', new_callable=AsyncMock):
+        with patch.object(virtual_client, '_update_filament_sensor', new_callable=AsyncMock):
+            with patch.object(virtual_client, '_mesh_compensation_status', new_callable=AsyncMock):
+                with patch.object(virtual_client, '_update_temperatures', new_callable=AsyncMock):
+                    with patch.object(virtual_client, '_is_printing', new_callable=AsyncMock, return_value=False):
+                        with patch.object(virtual_client, '_handle_heater_faults', new_callable=AsyncMock):
+                            with patch.object(virtual_client, '_handle_messagebox', new_callable=AsyncMock):
+                                await virtual_client._duet_on_objectmodel(old_om=None)
+
+    assert virtual_client._printer_timeout > time.time()
+
+
+@pytest.mark.asyncio
+async def test_connect_event_resets_printer_timeout(virtual_client):
+    """Test that a successful connect resets the _printer_timeout."""
+    virtual_client._printer_timeout = time.time() - 1  # expired
+    virtual_client.duet = Mock()
+    virtual_client.duet.om = {
+        'boards': [{'uniqueId': 'unique_id', 'firmwareName': 'RRF', 'firmwareVersion': '3.5'}],
+        'network': {'name': 'test-printer'},
+    }
+    virtual_client.duet.upload_stream = AsyncMock()
+
+    await virtual_client._duet_on_connect()
+
+    assert virtual_client._printer_timeout > time.time()

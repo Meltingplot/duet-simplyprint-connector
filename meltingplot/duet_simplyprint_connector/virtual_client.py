@@ -66,6 +66,8 @@ class VirtualConfig(PrinterConfig):
 class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfig]):
     """A Websocket client for the SimplyPrint.io Service."""
 
+    PRINTER_TIMEOUT = 60 * 5  # 5 minutes
+
     duet: DuetPrinter
     watchdog: Watchdog
 
@@ -107,7 +109,7 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
             logger=self.logger.getChild('duet_api'),
         )
 
-        self._printer_timeout = time.time() + 60 * 5  # 5 minutes
+        self._reset_printer_timeout()
 
         self.duet = DuetPrinter(
             logger=self.logger.getChild('duet'),
@@ -139,6 +141,7 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
 
     async def _duet_on_connect(self) -> None:
         """Connect to the Duet board."""
+        self._reset_printer_timeout()
         if self.config.in_setup:
             await self.duet.gcode(
                 f'M291 P"Code: {self.config.short_id}" R"Simplyprint.io Setup" S2',
@@ -197,6 +200,7 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
 
     async def _duet_on_objectmodel(self, old_om) -> None:
         """Handle Objectmodel changes."""
+        self._reset_printer_timeout()
         await self._update_printer_status()
         await self._update_filament_sensor()
         await self._mesh_compensation_status(old_om=old_om)
@@ -213,6 +217,10 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
         await self._handle_heater_faults(old_om=old_om)
         await self._handle_messagebox()
 
+    def _reset_printer_timeout(self):
+        """Reset the printer timeout to 5 minutes from now."""
+        self._printer_timeout = time.time() + self.PRINTER_TIMEOUT
+
     @async_task
     async def _duet_printer_task(self):
         """Duet Printer task."""
@@ -223,7 +231,6 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
                     await self.duet.close()
                 await self._ensure_duet_connection()
                 await self.duet.tick()
-                self._printer_timeout = time.time() + 60 * 5
                 await asyncio.sleep(0.5)
             except (TimeoutError, asyncio.TimeoutError):
                 continue
@@ -245,7 +252,7 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
         except (
             aiohttp.ClientConnectionError,
             aiohttp.ClientResponseError,
-            asyncio.TimeoutError,
+            TimeoutError,
         ):
             self.logger.debug('Failed to connect to Duet')
             await self.duet.close()
