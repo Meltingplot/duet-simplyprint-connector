@@ -32,6 +32,8 @@ def rescan_existing_networks(app):
     configs = app.config_manager.get_all()
     networks = {}
     for config in configs:
+        if config.duet_uri and config.duet_uri.startswith('file://'):
+            continue
         try:
             # Attempt to resolve the URI as a URL via DNS
             hostname = urlparse(config.duet_uri).hostname  # Extract hostname from URI
