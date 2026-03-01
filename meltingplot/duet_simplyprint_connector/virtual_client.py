@@ -66,6 +66,8 @@ class VirtualConfig(PrinterConfig):
 class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfig]):
     """A Websocket client for the SimplyPrint.io Service."""
 
+    PRINTER_TIMEOUT = 60 * 5  # 5 minutes
+
     duet: DuetPrinter
     watchdog: Watchdog
 
@@ -217,7 +219,7 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
 
     def _reset_printer_timeout(self):
         """Reset the printer timeout to 5 minutes from now."""
-        self._printer_timeout = time.time() + 60 * 5
+        self._printer_timeout = time.time() + self.PRINTER_TIMEOUT
 
     @async_task
     async def _duet_printer_task(self):
