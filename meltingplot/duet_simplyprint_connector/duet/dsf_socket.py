@@ -51,15 +51,14 @@ def _resolve_dsf_path(filepath: str, base_dir: str) -> str:
     :param base_dir: DSF SD card base directory (e.g. '/opt/dsf/sd')
     :return: Resolved absolute filesystem path
     """
+    parts = PurePosixPath(filepath).parts
     # Strip any RRF volume prefix (e.g. '0:', '1:', '10:')
-    if ':' in filepath:
-        prefix, rest = filepath.split(':', 1)
-        if prefix.isdigit():
-            filepath = rest
-
-    relative = PurePosixPath(filepath)
-    if relative.root:
-        relative = relative.relative_to('/')
+    if parts and parts[0][0].isdigit():
+        parts = parts[1:]
+    # Strip leading /
+    if parts and parts[0] == '/':
+        parts = parts[1:]
+    relative = PurePosixPath(*parts) if parts else PurePosixPath()
 
     base = Path(base_dir).resolve()
     resolved = (base / relative).resolve()
