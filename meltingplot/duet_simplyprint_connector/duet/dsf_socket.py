@@ -488,7 +488,7 @@ class DuetControlSocket(DuetAPIBase):
                         'name': entry.name,
                         'size': stat.st_size if entry.is_file() else 0,
                         'date': stat.st_mtime,
-                    }
+                    },
                 )
             return result
 
