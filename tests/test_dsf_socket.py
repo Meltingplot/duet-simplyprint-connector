@@ -140,7 +140,7 @@ def mock_writer():
 def socket_api(tmp_path):
     """Create a DuetControlSocket with a temp directory as sd_base_dir."""
     return DuetControlSocket(
-        address='socket:///var/run/dsf/dcs.sock',
+        address='file:///var/run/dsf/dcs.sock',
         socket_path='/var/run/dsf/dcs.sock',
         sd_base_dir=str(tmp_path),
     )
@@ -661,8 +661,8 @@ class TestDuetControlSocketIsBase:
         assert isinstance(socket_api, DuetAPIBase)
 
     def test_address_validation(self):
-        api = DuetControlSocket(address='socket:///var/run/dsf/dcs.sock')
-        assert api.address == 'socket:///var/run/dsf/dcs.sock'
+        api = DuetControlSocket(address='file:///var/run/dsf/dcs.sock')
+        assert api.address == 'file:///var/run/dsf/dcs.sock'
 
     def test_invalid_address_rejected(self):
         with pytest.raises(ValueError, match='Address must start with'):

@@ -146,7 +146,7 @@ async def test_connected_with_socket_api():
     mock_writer = MagicMock()
 
     socket_api = DuetControlSocket(
-        address='socket:///var/run/dsf/dcs.sock',
+        address='file:///var/run/dsf/dcs.sock',
     )
     socket_api._cmd_writer = mock_writer
 
@@ -158,7 +158,7 @@ async def test_connected_with_socket_api():
 async def test_connected_with_socket_api_disconnected():
     """Test connected() returns False when socket is disconnected."""
     socket_api = DuetControlSocket(
-        address='socket:///var/run/dsf/dcs.sock',
+        address='file:///var/run/dsf/dcs.sock',
     )
 
     printer = DuetPrinter(api=socket_api)
@@ -211,7 +211,7 @@ async def test_socket_connect_emits_connect_event(duet_printer_with_socket):
 async def test_gcode_via_socket():
     """Test sending G-code through socket API."""
     socket_api = DuetControlSocket(
-        address='socket:///var/run/dsf/dcs.sock',
+        address='file:///var/run/dsf/dcs.sock',
     )
 
     mock_reader = AsyncMock()

@@ -196,7 +196,7 @@ class DuetPrinter():
         self.logger.info(f"DCS socket found at {self.socket_path}, attempting direct connection")
         try:
             socket_api = DuetControlSocket(
-                address='socket://' + self.socket_path,
+                address='file://' + self.socket_path,
                 socket_path=self.socket_path,
                 logger=self.api.logger,
             )
