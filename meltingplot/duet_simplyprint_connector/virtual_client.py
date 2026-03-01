@@ -79,7 +79,7 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
     DOWNLOAD_PROGRESS_MAX = 50.0
     DOWNLOAD_PROGRESS_DIVISOR = 2.0
     PROGRESS_NEAR_COMPLETE = 99.9
-    PROGRESS_COMPLETE = 100.0
+    PROGRESS_MAX = 100.0
     PROGRESS_TIME_FACTOR = 0.025
 
     # File handling
@@ -558,7 +558,7 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
             for obj_id in skip_objects:
                 await self.duet.gcode(f"M486 P{obj_id}")
 
-        self.printer.file_progress.percent = self.PROGRESS_COMPLETE
+        self.printer.file_progress.percent = self.PROGRESS_MAX
         self.printer.file_progress.state = FileProgressStateEnum.READY
 
     async def on_file(self, data: FileDemandData) -> None:
@@ -909,7 +909,7 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
     async def _mark_job_as_finished(self) -> None:
         """Mark the current job as finished."""
         self.printer.job_info.finished = True
-        self.printer.job_info.progress = self.PROGRESS_COMPLETE
+        self.printer.job_info.progress = self.PROGRESS_MAX
         self._last_build_objects = None
 
     @async_task
@@ -985,8 +985,8 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
             total_filament_required = sum(job_status['file']['filament'])
             current_filament = float(job_status['rawExtrusion'])
             self.printer.job_info.progress = min(
-                current_filament * self.PROGRESS_COMPLETE / total_filament_required,
-                self.PROGRESS_COMPLETE,
+                current_filament * self.PROGRESS_MAX / total_filament_required,
+                self.PROGRESS_MAX,
             )
             self.printer.job_info.filament = round(current_filament, None)
         except (TypeError, KeyError, ZeroDivisionError):

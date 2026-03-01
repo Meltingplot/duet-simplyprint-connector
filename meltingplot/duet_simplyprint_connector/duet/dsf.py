@@ -36,8 +36,8 @@ class DuetSoftwareFramework(DuetAPIBase):
     # Log message truncation length
     LOG_TRUNCATION_LENGTH = 100
 
-    # Progress percentage boundaries
-    PROGRESS_COMPLETE = 100.0
+    # Progress percentage upper bound
+    PROGRESS_MAX = 100.0
 
     _ws = attr.ib(type=Optional[aiohttp.ClientWebSocketResponse], default=None)
     _ws_connected = attr.ib(type=bool, default=False)
@@ -327,8 +327,8 @@ class DuetSoftwareFramework(DuetAPIBase):
             while chunk := file.read(self.UPLOAD_CHUNK_SIZE):
                 if progress:
                     progress(
-                        max(0.0, min(self.PROGRESS_COMPLETE,
-                                     file.tell() / filesize * self.PROGRESS_COMPLETE)),
+                        max(0.0, min(self.PROGRESS_MAX,
+                                     file.tell() / filesize * self.PROGRESS_MAX)),
                     )
                 if not chunk:
                     break

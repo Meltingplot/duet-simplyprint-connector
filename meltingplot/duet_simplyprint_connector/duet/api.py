@@ -33,8 +33,8 @@ class RepRapFirmware(DuetAPIBase):
     # CRC32 bitmask for unsigned 32-bit result
     CRC32_MASK = 0xffffffff
 
-    # Progress percentage boundaries
-    PROGRESS_COMPLETE = 100.0
+    # Progress percentage upper bound
+    PROGRESS_MAX = 100.0
 
     password = attr.ib(type=str, default="meltingplot")
     _last_reply = attr.ib(type=str, default='')
@@ -306,8 +306,8 @@ class RepRapFirmware(DuetAPIBase):
             while chunk := file.read(self.UPLOAD_CHUNK_SIZE):
                 if progress:
                     progress(
-                        max(0.0, min(self.PROGRESS_COMPLETE,
-                                     file.tell() / filesize * self.PROGRESS_COMPLETE)),
+                        max(0.0, min(self.PROGRESS_MAX,
+                                     file.tell() / filesize * self.PROGRESS_MAX)),
                     )
                 if not chunk:
                     break

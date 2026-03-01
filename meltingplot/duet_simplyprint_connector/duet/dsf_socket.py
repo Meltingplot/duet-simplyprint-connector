@@ -36,8 +36,8 @@ MIN_DCS_API_VERSION = 8
 # RRF volume prefix length ('0:')
 VOLUME_PREFIX_LENGTH = 2
 
-# Progress percentage boundary
-PROGRESS_COMPLETE = 100.0
+# Progress percentage upper bound
+PROGRESS_MAX = 100.0
 
 # Default directory permissions
 DEFAULT_DIR_PERMISSIONS = 0o755
@@ -435,7 +435,7 @@ class DuetControlSocket(DuetAPIBase):
                     written += len(chunk)
                     if progress and filesize > 0:
                         progress(
-                            max(0.0, min(PROGRESS_COMPLETE, written / filesize * PROGRESS_COMPLETE)),
+                            max(0.0, min(PROGRESS_MAX, written / filesize * PROGRESS_MAX)),
                         )
 
         try:
