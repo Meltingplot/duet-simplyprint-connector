@@ -1,6 +1,7 @@
 """Tests for the VirtualClient class."""
 
 import asyncio
+import time
 from unittest.mock import AsyncMock, Mock, patch
 
 import aiohttp
@@ -903,3 +904,86 @@ def test_update_network_info(virtual_client):
 
     assert virtual_client.printer.info.local_ip == '192.168.1.10'
     assert virtual_client.printer.info.mac == 'aa:bb:cc:dd:ee:ff'
+
+
+# --- Group H: Printer offline detection ---
+
+
+@pytest.mark.asyncio
+async def test_ensure_duet_connection_catches_bare_timeout_error(virtual_client):
+    """Test _ensure_duet_connection catches bare TimeoutError from reauthenticate."""
+    virtual_client.duet = Mock()
+    virtual_client.duet.connected.return_value = False
+    virtual_client.duet.connect = AsyncMock(
+        side_effect=TimeoutError('Retried 3 times to reauthenticate.'),
+    )
+    virtual_client.duet.close = AsyncMock()
+
+    with pytest.raises(TimeoutError):
+        await virtual_client._ensure_duet_connection()
+
+    virtual_client.duet.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_ensure_duet_connection_catches_client_connection_error(virtual_client):
+    """Test _ensure_duet_connection catches aiohttp.ClientConnectionError."""
+    virtual_client.duet = Mock()
+    virtual_client.duet.connected.return_value = False
+    virtual_client.duet.connect = AsyncMock(
+        side_effect=aiohttp.ClientConnectionError('Connection refused'),
+    )
+    virtual_client.duet.close = AsyncMock()
+
+    with pytest.raises(TimeoutError):
+        await virtual_client._ensure_duet_connection()
+
+    virtual_client.duet.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_duet_printer_task_sets_offline_on_timeout(virtual_client):
+    """Test _duet_printer_task sets OFFLINE when TimeoutError is raised."""
+    virtual_client.printer = Mock()
+    virtual_client.printer.status = PrinterStatus.OPERATIONAL
+    virtual_client._is_stopped = False
+    virtual_client._printer_timeout = time.time() + 300
+    virtual_client._background_task = set()
+    virtual_client.event_loop = asyncio.get_event_loop()
+
+    async def ensure_connection_fails():
+        virtual_client._is_stopped = True
+        raise TimeoutError('Retried 3 times to reauthenticate.')
+
+    virtual_client._ensure_duet_connection = ensure_connection_fails
+
+    task = await virtual_client._duet_printer_task()
+    await task
+
+    assert virtual_client.printer.status == PrinterStatus.OFFLINE
+
+
+@pytest.mark.asyncio
+async def test_duet_printer_task_timeout_sets_offline(virtual_client):
+    """Test _duet_printer_task sets OFFLINE when printer timeout expires."""
+    virtual_client.printer = Mock()
+    virtual_client.printer.status = PrinterStatus.OPERATIONAL
+    virtual_client._is_stopped = False
+    # Set timeout in the past so it triggers immediately
+    virtual_client._printer_timeout = time.time() - 1
+    virtual_client._background_task = set()
+    virtual_client.event_loop = asyncio.get_event_loop()
+    virtual_client.duet = Mock()
+    virtual_client.duet.close = AsyncMock()
+
+    async def ensure_connection_fails():
+        virtual_client._is_stopped = True
+        raise TimeoutError('connection failed')
+
+    virtual_client._ensure_duet_connection = ensure_connection_fails
+
+    task = await virtual_client._duet_printer_task()
+    await task
+
+    assert virtual_client.printer.status == PrinterStatus.OFFLINE
+    virtual_client.duet.close.assert_awaited()
