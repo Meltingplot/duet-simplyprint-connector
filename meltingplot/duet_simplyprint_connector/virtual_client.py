@@ -107,7 +107,7 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
             logger=self.logger.getChild('duet_api'),
         )
 
-        self._printer_timeout = time.time() + 60 * 5  # 5 minutes
+        self._reset_printer_timeout()
 
         self.duet = DuetPrinter(
             logger=self.logger.getChild('duet'),
@@ -139,7 +139,7 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
 
     async def _duet_on_connect(self) -> None:
         """Connect to the Duet board."""
-        self._printer_timeout = time.time() + 60 * 5
+        self._reset_printer_timeout()
         if self.config.in_setup:
             await self.duet.gcode(
                 f'M291 P"Code: {self.config.short_id}" R"Simplyprint.io Setup" S2',
@@ -198,7 +198,7 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
 
     async def _duet_on_objectmodel(self, old_om) -> None:
         """Handle Objectmodel changes."""
-        self._printer_timeout = time.time() + 60 * 5
+        self._reset_printer_timeout()
         await self._update_printer_status()
         await self._update_filament_sensor()
         await self._mesh_compensation_status(old_om=old_om)
@@ -214,6 +214,10 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
 
         await self._handle_heater_faults(old_om=old_om)
         await self._handle_messagebox()
+
+    def _reset_printer_timeout(self):
+        """Reset the printer timeout to 5 minutes from now."""
+        self._printer_timeout = time.time() + 60 * 5
 
     @async_task
     async def _duet_printer_task(self):
