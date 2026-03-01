@@ -5,6 +5,9 @@ import asyncio
 import threading
 import time
 
+# Polling interval for the watchdog thread (seconds)
+WATCHDOG_CHECK_INTERVAL = 1
+
 
 class Watchdog:
     """A simple watchdog timer that raises KeyboardInterrupt if the timer expires."""
@@ -46,4 +49,4 @@ class Watchdog:
                 # Raise KeyboardInterrupt in main thread
                 _thread.interrupt_main()
                 break
-            time.sleep(1)  # Sleep for a short duration to avoid busy waiting
+            time.sleep(WATCHDOG_CHECK_INTERVAL)  # Sleep for a short duration to avoid busy waiting

@@ -17,23 +17,45 @@ from .base import DuetAPIBase, reauthenticate
 class DuetSoftwareFramework(DuetAPIBase):
     """Duet Software Framework (SBC mode) API Class."""
 
+    # HTTP status codes
+    HTTP_OK = 200
+    HTTP_CREATED = 201
+    HTTP_NO_CONTENT = 204
+    HTTP_UNAUTHORIZED = 401
+    HTTP_FORBIDDEN = 403
+    HTTP_BAD_GATEWAY = 502
+    HTTP_SERVICE_UNAVAILABLE = 503
+    DSF_AUTH_ERROR_STATUSES = [HTTP_UNAUTHORIZED, HTTP_FORBIDDEN]
+
+    # Error retry delay (seconds)
+    HTTP_ERROR_RETRY_DELAY = 5
+
+    # WebSocket heartbeat interval (seconds)
+    WS_HEARTBEAT_INTERVAL = 30.0
+
+    # Log message truncation length
+    LOG_TRUNCATION_LENGTH = 100
+
+    # Progress percentage boundaries
+    PROGRESS_COMPLETE = 100.0
+
     _ws = attr.ib(type=Optional[aiohttp.ClientWebSocketResponse], default=None)
     _ws_connected = attr.ib(type=bool, default=False)
 
     def __attrs_post_init__(self):
         """Post init."""
-        self.callbacks[502] = self._default_http_502_bad_gateway_callback
-        self.callbacks[503] = self._default_http_503_unavailable_callback
+        self.callbacks[self.HTTP_BAD_GATEWAY] = self._default_http_502_bad_gateway_callback
+        self.callbacks[self.HTTP_SERVICE_UNAVAILABLE] = self._default_http_503_unavailable_callback
 
     async def _default_http_502_bad_gateway_callback(self, e):
         # HTTP 502 may indicate incompatible DCS version
         self.logger.error(f'DSF bad gateway (incompatible DCS version?) {e.request_info!s} - retry')
-        await asyncio.sleep(5)
+        await asyncio.sleep(self.HTTP_ERROR_RETRY_DELAY)
 
     async def _default_http_503_unavailable_callback(self, e):
         # HTTP 503 indicates DCS is unavailable
         self.logger.error(f'DSF unavailable {e.request_info!s} - retry')
-        await asyncio.sleep(5)
+        await asyncio.sleep(self.HTTP_ERROR_RETRY_DELAY)
 
     async def reconnect(self) -> dict:
         """Reconnect to the Duet via DSF."""
@@ -60,7 +82,7 @@ class DuetSoftwareFramework(DuetAPIBase):
 
             json_response = {}
             async with self.session.get(url, params=params) as r:
-                if r.status == 200:
+                if r.status == self.HTTP_OK:
                     json_response = await r.json()
                     if 'sessionKey' in json_response:
                         self.session.headers['X-Session-Key'] = str(json_response['sessionKey'])
@@ -75,7 +97,7 @@ class DuetSoftwareFramework(DuetAPIBase):
 
         async with self.session.get(url) as r:
             # DSF returns 204 No Content on success
-            if r.status != 204:
+            if r.status != self.HTTP_NO_CONTENT:
                 self.logger.warning(f'Unexpected status {r.status} during disconnect')
 
         await self.close()
@@ -100,7 +122,7 @@ class DuetSoftwareFramework(DuetAPIBase):
             await self._ws.send_str('OK\n')
             return data
         except json.JSONDecodeError:
-            self.logger.warning(f"Invalid JSON from WebSocket: {msg.data[:100]}")
+            self.logger.warning(f"Invalid JSON from WebSocket: {msg.data[:self.LOG_TRUNCATION_LENGTH]}")
             return None
 
     async def subscribe(self) -> AsyncIterator[dict]:
@@ -113,7 +135,7 @@ class DuetSoftwareFramework(DuetAPIBase):
         ws_url = self._build_ws_url()
 
         try:
-            self._ws = await self.session.ws_connect(ws_url, heartbeat=30.0)
+            self._ws = await self.session.ws_connect(ws_url, heartbeat=self.WS_HEARTBEAT_INTERVAL)
             self._ws_connected = True
             self.logger.info(f"WebSocket connected to {ws_url}")
 
@@ -160,7 +182,7 @@ class DuetSoftwareFramework(DuetAPIBase):
         """Check if WebSocket is connected."""
         return self._ws_connected and self._ws is not None and not self._ws.closed
 
-    @reauthenticate(auth_error_status=[401, 403])
+    @reauthenticate(auth_error_status=DSF_AUTH_ERROR_STATUSES)
     async def noop(self) -> None:
         """Send keep-alive request to DSF."""
         await self._ensure_session()
@@ -169,10 +191,10 @@ class DuetSoftwareFramework(DuetAPIBase):
 
         async with self.session.get(url) as r:
             # DSF returns 204 No Content on success
-            if r.status != 204:
+            if r.status != self.HTTP_NO_CONTENT:
                 self.logger.warning(f'Unexpected status {r.status} during noop')
 
-    @reauthenticate(auth_error_status=[401, 403])
+    @reauthenticate(auth_error_status=DSF_AUTH_ERROR_STATUSES)
     async def model(self) -> dict:
         """Get the full machine object model."""
         self.logger.debug("model: fetching full object model")
@@ -186,7 +208,7 @@ class DuetSoftwareFramework(DuetAPIBase):
             response = await r.json()
         return response
 
-    @reauthenticate(auth_error_status=[401, 403])
+    @reauthenticate(auth_error_status=DSF_AUTH_ERROR_STATUSES)
     async def status(self) -> dict:
         """Get machine object model (alias for model in DSF v3.4.6+)."""
         self.logger.debug("status: fetching machine status")
@@ -200,7 +222,7 @@ class DuetSoftwareFramework(DuetAPIBase):
             response = await r.json()
         return response
 
-    @reauthenticate(auth_error_status=[401, 403])
+    @reauthenticate(auth_error_status=DSF_AUTH_ERROR_STATUSES)
     async def code(self, gcode: str, async_exec: bool = False) -> str:
         """Execute G-code on the Duet via DSF.
 
@@ -247,7 +269,7 @@ class DuetSoftwareFramework(DuetAPIBase):
             async for chunk in r.content.iter_chunked(chunk_size):
                 yield chunk
 
-    @reauthenticate(auth_error_status=[401, 403])
+    @reauthenticate(auth_error_status=DSF_AUTH_ERROR_STATUSES)
     async def upload(
         self,
         filepath: str,
@@ -273,7 +295,7 @@ class DuetSoftwareFramework(DuetAPIBase):
 
         async with self.session.put(url, data=content, headers=headers) as r:
             # DSF returns 201 Created on success
-            if r.status not in (200, 201):
+            if r.status not in (self.HTTP_OK, self.HTTP_CREATED):
                 body = await r.text()
                 self.logger.warning(f'Unexpected status {r.status} during upload')
                 raise IOError(f"Upload failed with status {r.status}: {body}")
@@ -305,8 +327,8 @@ class DuetSoftwareFramework(DuetAPIBase):
             while chunk := file.read(self.UPLOAD_CHUNK_SIZE):
                 if progress:
                     progress(
-                        max(0.0, min(100.0,
-                                     file.tell() / filesize * 100.0)),
+                        max(0.0, min(self.PROGRESS_COMPLETE,
+                                     file.tell() / filesize * self.PROGRESS_COMPLETE)),
                     )
                 if not chunk:
                     break
@@ -327,12 +349,12 @@ class DuetSoftwareFramework(DuetAPIBase):
             headers=headers,
         ) as r:
             # DSF returns 201 Created on success
-            if r.status not in (200, 201):
+            if r.status not in (self.HTTP_OK, self.HTTP_CREATED):
                 body = await r.text()
                 self.logger.warning(f'Unexpected status {r.status} during upload_stream')
                 raise IOError(f"Upload failed with status {r.status}: {body}")
 
-    @reauthenticate(auth_error_status=[401, 403])
+    @reauthenticate(auth_error_status=DSF_AUTH_ERROR_STATUSES)
     async def delete(self, filepath: str, recursive: bool = False) -> None:
         """Delete a file or directory from the Duet via DSF.
 
@@ -351,10 +373,10 @@ class DuetSoftwareFramework(DuetAPIBase):
 
         async with self.session.delete(url, params=params if params else None) as r:
             # DSF returns 204 No Content on success
-            if r.status != 204:
+            if r.status != self.HTTP_NO_CONTENT:
                 self.logger.warning(f'Unexpected status {r.status} during delete')
 
-    @reauthenticate(auth_error_status=[401, 403])
+    @reauthenticate(auth_error_status=DSF_AUTH_ERROR_STATUSES)
     async def fileinfo(self, filepath: str, **kwargs) -> dict:
         """Get parsed file information from DSF.
 
@@ -372,7 +394,7 @@ class DuetSoftwareFramework(DuetAPIBase):
             response = await r.json()
         return response
 
-    @reauthenticate(auth_error_status=[401, 403])
+    @reauthenticate(auth_error_status=DSF_AUTH_ERROR_STATUSES)
     async def move(
         self,
         old_filepath: str,
@@ -398,10 +420,10 @@ class DuetSoftwareFramework(DuetAPIBase):
 
         async with self.session.post(url, data=data) as r:
             # DSF returns 204 No Content on success
-            if r.status != 204:
+            if r.status != self.HTTP_NO_CONTENT:
                 self.logger.warning(f'Unexpected status {r.status} during move')
 
-    @reauthenticate(auth_error_status=[401, 403])
+    @reauthenticate(auth_error_status=DSF_AUTH_ERROR_STATUSES)
     async def filelist(self, directory: str) -> list:
         """List files in a directory on the Duet via DSF.
 
@@ -419,7 +441,7 @@ class DuetSoftwareFramework(DuetAPIBase):
             response = await r.json()
         return response
 
-    @reauthenticate(auth_error_status=[401, 403])
+    @reauthenticate(auth_error_status=DSF_AUTH_ERROR_STATUSES)
     async def mkdir(self, directory: str) -> None:
         """Create a directory on the Duet via DSF.
 
@@ -433,10 +455,10 @@ class DuetSoftwareFramework(DuetAPIBase):
 
         async with self.session.put(url) as r:
             # DSF returns 204 No Content on success
-            if r.status != 204:
+            if r.status != self.HTTP_NO_CONTENT:
                 self.logger.warning(f'Unexpected status {r.status} during mkdir')
 
-    @reauthenticate(auth_error_status=[401, 403])
+    @reauthenticate(auth_error_status=DSF_AUTH_ERROR_STATUSES)
     async def install_plugin(self, content: bytes) -> None:
         """Install a plugin on the Duet via DSF.
 
@@ -453,10 +475,10 @@ class DuetSoftwareFramework(DuetAPIBase):
 
         async with self.session.put(url, data=content, headers=headers) as r:
             # DSF returns 204 No Content on success
-            if r.status != 204:
+            if r.status != self.HTTP_NO_CONTENT:
                 self.logger.warning(f'Unexpected status {r.status} during install_plugin')
 
-    @reauthenticate(auth_error_status=[401, 403])
+    @reauthenticate(auth_error_status=DSF_AUTH_ERROR_STATUSES)
     async def uninstall_plugin(self, name: str) -> None:
         """Uninstall a plugin from the Duet via DSF.
 
@@ -473,10 +495,10 @@ class DuetSoftwareFramework(DuetAPIBase):
 
         async with self.session.delete(url, headers=headers) as r:
             # DSF returns 204 No Content on success
-            if r.status != 204:
+            if r.status != self.HTTP_NO_CONTENT:
                 self.logger.warning(f'Unexpected status {r.status} during uninstall_plugin')
 
-    @reauthenticate(auth_error_status=[401, 403])
+    @reauthenticate(auth_error_status=DSF_AUTH_ERROR_STATUSES)
     async def set_plugin_data(self, plugin: str, key: str, value: str) -> None:
         """Set plugin data via DSF.
 
@@ -496,10 +518,10 @@ class DuetSoftwareFramework(DuetAPIBase):
 
         async with self.session.patch(url, json=data) as r:
             # DSF returns 204 No Content on success
-            if r.status != 204:
+            if r.status != self.HTTP_NO_CONTENT:
                 self.logger.warning(f'Unexpected status {r.status} during set_plugin_data')
 
-    @reauthenticate(auth_error_status=[401, 403])
+    @reauthenticate(auth_error_status=DSF_AUTH_ERROR_STATUSES)
     async def start_plugin(self, name: str) -> None:
         """Start a plugin on the Duet via DSF.
 
@@ -515,10 +537,10 @@ class DuetSoftwareFramework(DuetAPIBase):
 
         async with self.session.post(url, data=data) as r:
             # DSF returns 204 No Content on success
-            if r.status != 204:
+            if r.status != self.HTTP_NO_CONTENT:
                 self.logger.warning(f'Unexpected status {r.status} during start_plugin')
 
-    @reauthenticate(auth_error_status=[401, 403])
+    @reauthenticate(auth_error_status=DSF_AUTH_ERROR_STATUSES)
     async def stop_plugin(self, name: str) -> None:
         """Stop a plugin on the Duet via DSF.
 
@@ -534,5 +556,5 @@ class DuetSoftwareFramework(DuetAPIBase):
 
         async with self.session.post(url, data=data) as r:
             # DSF returns 204 No Content on success
-            if r.status != 204:
+            if r.status != self.HTTP_NO_CONTENT:
                 self.logger.warning(f'Unexpected status {r.status} during stop_plugin')

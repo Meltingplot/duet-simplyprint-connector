@@ -30,6 +30,18 @@ SOCKET_BUFFER_SIZE = 65536
 # Chunk size for file I/O streaming
 FILE_IO_CHUNK_SIZE = 65536
 
+# Minimum DCS API version required
+MIN_DCS_API_VERSION = 8
+
+# RRF volume prefix length ('0:')
+VOLUME_PREFIX_LENGTH = 2
+
+# Progress percentage boundary
+PROGRESS_COMPLETE = 100.0
+
+# Default directory permissions
+DEFAULT_DIR_PERMISSIONS = 0o755
+
 
 def _resolve_dsf_path(filepath: str, base_dir: str) -> str:
     """Resolve a RepRapFirmware virtual path to a real filesystem path.
@@ -43,7 +55,7 @@ def _resolve_dsf_path(filepath: str, base_dir: str) -> str:
     """
     # Strip the volume prefix '0:/' or '0:' if present
     if filepath.startswith('0:'):
-        filepath = filepath[2:]
+        filepath = filepath[VOLUME_PREFIX_LENGTH:]
     # Ensure leading slash for consistent joining
     if filepath.startswith('/'):
         filepath = filepath[1:]
@@ -156,10 +168,10 @@ class DuetControlSocket(DuetAPIBase):
         self.logger.debug(f"DCS server init: {server_init}")
 
         server_version = server_init.get('version', 0)
-        if server_version < 8:
+        if server_version < MIN_DCS_API_VERSION:
             writer.close()
             raise ConnectionError(
-                f'Incompatible DCS API version: {server_version} (need >= 8)',
+                f'Incompatible DCS API version: {server_version} (need >= {MIN_DCS_API_VERSION})',
             )
 
         return reader, writer, receiver
@@ -423,7 +435,7 @@ class DuetControlSocket(DuetAPIBase):
                     written += len(chunk)
                     if progress and filesize > 0:
                         progress(
-                            max(0.0, min(100.0, written / filesize * 100.0)),
+                            max(0.0, min(PROGRESS_COMPLETE, written / filesize * PROGRESS_COMPLETE)),
                         )
 
         try:
@@ -501,7 +513,7 @@ class DuetControlSocket(DuetAPIBase):
         """
         real_path = _resolve_dsf_path(directory, self.sd_base_dir)
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, os.makedirs, real_path, 0o755, True)
+        await loop.run_in_executor(None, os.makedirs, real_path, DEFAULT_DIR_PERMISSIONS, True)
 
     async def move(
         self,

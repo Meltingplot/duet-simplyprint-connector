@@ -68,6 +68,46 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
 
     PRINTER_TIMEOUT = 60 * 5  # 5 minutes
 
+    # Duet printer task intervals (seconds)
+    DUET_TICK_INTERVAL = 0.5
+    DUET_ERROR_RETRY_DELAY = 10
+    DUET_RECONNECT_DELAY = 30
+
+    # File upload/download progress boundaries (percent)
+    UPLOAD_PROGRESS_START = 50
+    UPLOAD_PROGRESS_MAX = 90.0
+    DOWNLOAD_PROGRESS_MAX = 50.0
+    DOWNLOAD_PROGRESS_DIVISOR = 2.0
+    PROGRESS_NEAR_COMPLETE = 99.9
+    PROGRESS_COMPLETE = 100.0
+    PROGRESS_TIME_FACTOR = 0.025
+
+    # File handling
+    AUTO_START_TIMEOUT = 400  # seconds
+    FILE_INFO_TIMEOUT = 10  # seconds
+    FILE_PROGRESS_UPDATE_INTERVAL = 5  # seconds
+    UPLOAD_MAX_RETRIES = 3
+    UPLOAD_RETRY_STATUSES = {401, 500, 503}
+
+    # Temperatures
+    DEFAULT_AMBIENT_TEMPERATURE = 20  # Celsius
+
+    # Connector status
+    CONNECTOR_STATUS_INTERVAL = 120  # seconds
+
+    # Job info
+    JOB_STARTED_DURATION_THRESHOLD = 10  # seconds
+
+    # M291 message box modes (RepRapFirmware protocol)
+    M291_MODE_CLOSE = 1
+    M291_MODE_OK = 2
+    M291_MODE_OK_CANCEL = 3
+    M291_MODE_CHOICES = 4
+    M291_MODE_INTEGER_INPUT = 5
+    M291_MODE_FLOAT_INPUT = 6
+    M291_MODE_STRING_INPUT = 7
+    M291_BLOCKING_MODE_THRESHOLD = 2
+
     duet: DuetPrinter
     watchdog: Watchdog
 
@@ -231,7 +271,7 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
                     await self.duet.close()
                 await self._ensure_duet_connection()
                 await self.duet.tick()
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(self.DUET_TICK_INTERVAL)
             except (TimeoutError, asyncio.TimeoutError):
                 continue
             except asyncio.CancelledError as e:
@@ -242,7 +282,7 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
                     "An exception occurred while ticking duet printer",
                 )
                 # TODO: log to sentry
-                await asyncio.sleep(10)
+                await asyncio.sleep(self.DUET_ERROR_RETRY_DELAY)
 
     async def _ensure_duet_connection(self):
         """Ensure the Duet connection is active."""
@@ -256,7 +296,7 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
         ):
             self.logger.debug('Failed to connect to Duet')
             await self.duet.close()
-            await asyncio.sleep(30)
+            await asyncio.sleep(self.DUET_RECONNECT_DELAY)
             raise TimeoutError
 
     async def on_connected(self, _) -> None:
@@ -389,20 +429,27 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
 
     def _upload_file_progress(self, progress: float) -> None:
         """Update the file upload progress."""
-        # contrains the progress from 50 - 90 %
-        self.printer.file_progress.percent = min(round(50 + (max(0, min(50, progress / 2))), 0), 90.0)
+        # constrains the progress from UPLOAD_PROGRESS_START to UPLOAD_PROGRESS_MAX %
+        self.printer.file_progress.percent = min(
+            round(
+                self.UPLOAD_PROGRESS_START +
+                (max(0, min(self.UPLOAD_PROGRESS_START, progress / self.DOWNLOAD_PROGRESS_DIVISOR))),
+                0,
+            ),
+            self.UPLOAD_PROGRESS_MAX,
+        )
 
     async def _auto_start_file(self, filename: str) -> None:
         """Auto start the file after it has been uploaded."""
         self.logger.debug(f"Auto starting file {filename}")
         self.printer.job_info.filename = filename
-        timeout = time.time() + 400  # seconds
+        timeout = time.time() + self.AUTO_START_TIMEOUT
 
         while timeout > time.time():
             try:
                 response = await self.duet.fileinfo(
                     filepath=f"0:/gcodes/{filename}",
-                    timeout=aiohttp.ClientTimeout(total=10),
+                    timeout=aiohttp.ClientTimeout(total=self.FILE_INFO_TIMEOUT),
                 )
                 self.logger.debug(f"File info response: {response}")
                 break
@@ -416,8 +463,11 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
                 self.logger.exception("An exception occurred while checking if file is ready")
                 pass
 
-            timeleft = 10 - ((timeout - time.time()) * 0.025)
-            self.printer.file_progress.percent = min(99.9, (90.0 + timeleft))
+            timeleft = self.FILE_INFO_TIMEOUT - ((timeout - time.time()) * self.PROGRESS_TIME_FACTOR)
+            self.printer.file_progress.percent = min(
+                self.PROGRESS_NEAR_COMPLETE,
+                (self.UPLOAD_PROGRESS_MAX + timeleft),
+            )
 
             await asyncio.sleep(1)
         else:
@@ -436,7 +486,7 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
         """
         while not self._is_stopped and self.printer.file_progress.state == FileProgressStateEnum.DOWNLOADING:
             self.printer.file_progress.model_set_changed("state", "percent")
-            await asyncio.sleep(5)
+            await asyncio.sleep(self.FILE_PROGRESS_UPDATE_INTERVAL)
 
     @async_task
     @async_supress
@@ -457,14 +507,16 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
         with tempfile.NamedTemporaryFile(suffix='.gcode') as f:
             async for chunk in downloader.download(
                 data=event,
-                clamp_progress=(lambda x: float(max(0.0, min(50.0, x / 2.0)))),
+                clamp_progress=(
+                    lambda x: float(max(0.0, min(self.DOWNLOAD_PROGRESS_MAX, x / self.DOWNLOAD_PROGRESS_DIVISOR)))
+                ),
             ):
                 f.write(chunk)
 
             f.seek(0)
             prefix = '0:/gcodes/'
 
-            for attempt in range(3):
+            for attempt in range(self.UPLOAD_MAX_RETRIES):
                 try:
                     # Ensure progress updates are sent during the upload process.
                     await self.duet.upload_stream(
@@ -477,11 +529,12 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
                     self.printer.file_progress.state = FileProgressStateEnum.ERROR
                     return
                 except aiohttp.ClientResponseError as e:
-                    if e.status in {401, 500, 503}:
+                    if e.status in self.UPLOAD_RETRY_STATUSES:
                         self.logger.warning(
-                            "Upload failed with %d, retrying (attempt %d/3)",
+                            "Upload failed with %d, retrying (attempt %d/%d)",
                             e.status,
                             attempt + 1,
+                            self.UPLOAD_MAX_RETRIES,
                         )
                         f.seek(0)
                         await self.duet.api.reconnect()
@@ -492,7 +545,7 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
                         )
                         raise e
             else:
-                self.logger.error("Upload failed after 3 retries")
+                self.logger.error("Upload failed after %d retries", self.UPLOAD_MAX_RETRIES)
                 self.printer.file_progress.state = FileProgressStateEnum.ERROR
                 return
 
@@ -505,7 +558,7 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
             for obj_id in skip_objects:
                 await self.duet.gcode(f"M486 P{obj_id}")
 
-        self.printer.file_progress.percent = 100.0
+        self.printer.file_progress.percent = self.PROGRESS_COMPLETE
         self.printer.file_progress.state = FileProgressStateEnum.READY
 
     async def on_file(self, data: FileDemandData) -> None:
@@ -661,7 +714,10 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
 
                 actions = self._messagebox_actions(mode, choices, default)
                 # the UI for Warning and Error is not made for actions
-                severity = NotificationEventSeverity.ERROR if mode >= 2 else NotificationEventSeverity.INFO
+                severity = (
+                    NotificationEventSeverity.ERROR
+                    if mode >= self.M291_BLOCKING_MODE_THRESHOLD else NotificationEventSeverity.INFO
+                )
 
                 self.logger.debug(f"Message box actions: {list(actions.keys())}")
 
@@ -687,24 +743,24 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
             *retained_events,
         )
 
-    @staticmethod
-    def _messagebox_actions(mode, choices, default):
+    @classmethod
+    def _messagebox_actions(cls, mode, choices, default):
         """Build notification actions for a Duet M291 message box mode."""
         actions = {}
-        if mode == 1:
+        if mode == cls.M291_MODE_CLOSE:
             actions["close"] = NotificationEventButtonAction(label="Close")
-        elif mode == 2:
+        elif mode == cls.M291_MODE_OK:
             actions["ok"] = NotificationEventButtonAction(label="OK")
-        elif mode == 3:
+        elif mode == cls.M291_MODE_OK_CANCEL:
             actions["ok"] = NotificationEventButtonAction(label="OK")
             actions["cancel"] = NotificationEventButtonAction(label="Cancel")
-        elif mode == 4 and choices:
+        elif mode == cls.M291_MODE_CHOICES and choices:
             for idx, choice in enumerate(choices):
                 actions[f"choice_{idx}"] = NotificationEventButtonAction(label=choice)
-        elif mode in (5, 6) and default is not None:
+        elif mode in (cls.M291_MODE_INTEGER_INPUT, cls.M291_MODE_FLOAT_INPUT) and default is not None:
             actions["default"] = NotificationEventButtonAction(label=f"Use default ({default})")
             actions["cancel"] = NotificationEventButtonAction(label="Cancel")
-        elif mode == 7 and default is not None:
+        elif mode == cls.M291_MODE_STRING_INPUT and default is not None:
             actions["default"] = NotificationEventButtonAction(label=f'Use default ("{default}")')
             actions["cancel"] = NotificationEventButtonAction(label="Cancel")
         return actions
@@ -745,16 +801,16 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
                 cmd = f"M292 P1{seq_param}"
                 self.logger.info(f"Message box cancelled by user, sending {cmd}")
                 await self.duet.gcode(cmd)
-            elif mode == 4 and data.action.startswith("choice_"):
+            elif mode == self.M291_MODE_CHOICES and data.action.startswith("choice_"):
                 choice_idx = data.action.split("_", 1)[1]
                 cmd = f"M292 P0 R{{{choice_idx}}}{seq_param}"
                 self.logger.info(f"Message box choice {choice_idx} selected, sending {cmd}")
                 await self.duet.gcode(cmd)
-            elif mode in (5, 6) and data.action == "default":
+            elif mode in (self.M291_MODE_INTEGER_INPUT, self.M291_MODE_FLOAT_INPUT) and data.action == "default":
                 cmd = f"M292 P0 R{{{default}}}{seq_param}"
                 self.logger.info(f"Message box default {default} accepted, sending {cmd}")
                 await self.duet.gcode(cmd)
-            elif mode == 7 and data.action == "default":
+            elif mode == self.M291_MODE_STRING_INPUT and data.action == "default":
                 cmd = f'M292 P0 R{{"{default}"}}{seq_param}'
                 self.logger.info(f'Message box default "{default}" accepted, sending {cmd}')
                 await self.duet.gcode(cmd)
@@ -779,7 +835,7 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
             tool.temperature.actual = heaters[heater_idx]['current']
             tool.temperature.target = (heaters[heater_idx]['active'] if heaters[heater_idx]['state'] != 'off' else 0.0)
 
-        self.printer.ambient_temperature.ambient = 20
+        self.printer.ambient_temperature.ambient = self.DEFAULT_AMBIENT_TEMPERATURE
 
     async def _check_and_set_cookie(self) -> None:
         """Write the connector cookie to the printer."""
@@ -853,7 +909,7 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
     async def _mark_job_as_finished(self) -> None:
         """Mark the current job as finished."""
         self.printer.job_info.finished = True
-        self.printer.job_info.progress = 100.0
+        self.printer.job_info.progress = self.PROGRESS_COMPLETE
         self._last_build_objects = None
 
     @async_task
@@ -862,7 +918,7 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
         while not self._is_stopped:
             await self._update_cpu_and_memory_info()
             self._update_network_info()
-            await asyncio.sleep(120)
+            await asyncio.sleep(self.CONNECTOR_STATUS_INTERVAL)
 
     def _update_network_info(self) -> None:
         """Update the network information."""
@@ -929,8 +985,8 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
             total_filament_required = sum(job_status['file']['filament'])
             current_filament = float(job_status['rawExtrusion'])
             self.printer.job_info.progress = min(
-                current_filament * 100.0 / total_filament_required,
-                100.0,
+                current_filament * self.PROGRESS_COMPLETE / total_filament_required,
+                self.PROGRESS_COMPLETE,
             )
             self.printer.job_info.filament = round(current_filament, None)
         except (TypeError, KeyError, ZeroDivisionError):
@@ -946,7 +1002,7 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
         try:
             filepath = job_status['file']['fileName']
             self.printer.job_info.filename = pathlib.PurePath(filepath).name
-            if job_status.get('duration', 0) < 10:
+            if job_status.get('duration', 0) < self.JOB_STARTED_DURATION_THRESHOLD:
                 self.printer.job_info.started = True
         except (TypeError, KeyError):
             pass
