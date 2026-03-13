@@ -166,8 +166,8 @@ class RepRapFirmware(DuetAPIBase):
             'gcode': gcode,
         }
 
-        async with self.session.get(url, params=params):
-            pass
+        async with self.session.get(url, params=params) as r:
+            await r.read()  # Consume response to release connection
 
         if no_reply:
             return ''
