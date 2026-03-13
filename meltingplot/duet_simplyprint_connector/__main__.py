@@ -21,6 +21,20 @@ from .cli.install import install_as_service
 from .virtual_client import VirtualClient, VirtualConfig
 from .watchdog import Watchdog
 
+# Network scanning subnet prefixes
+IPV4_SUBNET_PREFIX = 24  # /24 = 256 addresses
+IPV6_SUBNET_PREFIX = 120  # /120 = 256 addresses (smaller than /64)
+
+# Watchdog configuration (seconds)
+WATCHDOG_TIMEOUT = 300  # 5 minutes
+WATCHDOG_STARTUP_OFFSET = 600  # 10 minutes initial grace period
+
+# Camera worker pool sizing
+CAMERA_WORKERS_DIVISOR = 10  # 1 worker per N configs
+
+# Password display masking
+PASSWORD_VISIBLE_CHARS = 2
+
 
 def rescan_existing_networks(app):
     """
@@ -32,6 +46,8 @@ def rescan_existing_networks(app):
     configs = app.config_manager.get_all()
     networks = {}
     for config in configs:
+        if config.duet_uri and config.duet_uri.startswith('file://'):
+            continue
         try:
             # Attempt to resolve the URI as a URL via DNS
             hostname = urlparse(config.duet_uri).hostname  # Extract hostname from URI
@@ -42,17 +58,19 @@ def rescan_existing_networks(app):
                 if socktype == socket.SOCK_STREAM:
                     if family == socket.AF_INET:
                         ip_address = sockaddr[0]
-                        network = ipaddress.ip_network(ip_address, strict=False).supernet(new_prefix=24)
+                        network = ipaddress.ip_network(ip_address,
+                                                       strict=False).supernet(new_prefix=IPV4_SUBNET_PREFIX)
                         break
                     elif family == socket.AF_INET6:
                         ip_address = sockaddr[0]
                         # Using /64 as prefix is to large as it includes 18,446,744,073,709,551,616 addresses
                         # Using /120 as prefix is small enough as it includes 256 addresses
-                        network = ipaddress.ip_network(ip_address, strict=False).supernet(new_prefix=120)
+                        network = ipaddress.ip_network(ip_address,
+                                                       strict=False).supernet(new_prefix=IPV6_SUBNET_PREFIX)
                         break
         except (socket.gaierror, ValueError, TypeError):
             # If DNS resolution fails, treat it as an IP address directly
-            network = ipaddress.ip_network(config.duet_uri, strict=False).supernet(new_prefix=24)
+            network = ipaddress.ip_network(config.duet_uri, strict=False).supernet(new_prefix=IPV4_SUBNET_PREFIX)
         networks[f"{network}"] = config.duet_password
     return networks
 
@@ -66,7 +84,10 @@ def run_app(autodiscover, app, profile, watchdog: Watchdog):
 
     try:
         for network, pwd in networks.items():
-            click.echo(f"Scanning existing network: {network} with password {pwd[:2]}{'*' * (len(pwd) - 2)}")
+            click.echo(
+                f"Scanning existing network: {network}"
+                f" with password {pwd[:PASSWORD_VISIBLE_CHARS]}{'*' * (len(pwd) - PASSWORD_VISIBLE_CHARS)}",
+            )
             if ':' in network:
                 autodiscover._autodiscover(password=pwd, ipv6_range=network, ipv4_range='127.0.0.1/32')
             else:
@@ -96,18 +117,18 @@ def run_app(autodiscover, app, profile, watchdog: Watchdog):
 
         atexit.register(app_exit)
 
-    watchdog.reset_sync(offset=600)  # Reset the watchdog timer
+    watchdog.reset_sync(offset=WATCHDOG_STARTUP_OFFSET)  # Reset the watchdog timer
     watchdog.start()  # Start the watchdog to start the timer
     app.run_blocking()
 
 
 def main():
     """Initiate the connector as the main entry point."""
-    watchdog = Watchdog(timeout=300)
+    watchdog = Watchdog(timeout=WATCHDOG_TIMEOUT)
     VirtualClient.watchdog = watchdog
 
     config_manager = ConfigManagerType.JSON(name="DuetConnector", config_t=VirtualConfig)
-    camera_workers = max(1, math.ceil(len(config_manager) / 10))
+    camera_workers = max(1, math.ceil(len(config_manager) / CAMERA_WORKERS_DIVISOR))
 
     settings = ClientSettings(
         name="DuetConnector",

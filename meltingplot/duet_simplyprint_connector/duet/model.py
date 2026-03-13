@@ -4,6 +4,7 @@ import asyncio
 import csv
 import io
 import logging
+import os
 import time
 from copy import deepcopy
 from enum import auto
@@ -17,6 +18,7 @@ from strenum import CamelCaseStrEnum, StrEnum
 from .api import RepRapFirmware
 from .base import DuetAPIBase
 from .dsf import DuetSoftwareFramework
+from .dsf_socket import DEFAULT_SOCKET_PATH, DuetControlSocket
 
 
 def merge_dictionary(source, destination):
@@ -113,24 +115,46 @@ class DuetPrinter():
     # Backoff schedule in seconds: 1 min, 5 min, 30 min (capped)
     WS_RETRY_DELAYS = [60, 300, 1800]
 
+    # HTTP status codes
+    HTTP_SERVICE_UNAVAILABLE = 503
+
+    # Error retry delay (seconds)
+    HTTP_ERROR_RETRY_DELAY = 5
+
+    # Heightmap parsing
+    HEIGHTMAP_CSV_HEADER_LINES = 3
+    RECTANGULAR_GRID_RADIUS = -1  # Sentinel value indicating rectangular grid
+
+    # Object model fetch depths
+    OM_DEPTH_SHALLOW = 1
+    OM_DEPTH_MEDIUM = 2
+    OM_DEPTH_FULL = 99
+
+    # Default RRF poll interval (seconds)
+    DEFAULT_POLL_INTERVAL = 3.0
+
+    # Default download chunk size (bytes)
+    DEFAULT_DOWNLOAD_CHUNK_SIZE = 1024
+
     api: DuetAPIBase = field(factory=RepRapFirmware)
     om = field(type=dict, default=None)
     seqs = field(type=dict, factory=dict)
     logger = field(type=logging.Logger, factory=logging.getLogger)
     events = field(type=AsyncIOEventEmitter, factory=AsyncIOEventEmitter)
     sbc = field(type=bool, default=False)
+    socket_path = field(type=str, default=DEFAULT_SOCKET_PATH)
     _reply = field(type=str, default=None)
     _wait_for_reply = field(type=asyncio.Event, factory=asyncio.Event)
     _ws_task = field(type=Optional[asyncio.Task], default=None)
     _ws_enabled = field(type=bool, default=True)
     _ws_retry_at: Optional[float] = field(default=None)
     _ws_retry_count: int = field(default=0)
-    _rrf_poll_interval: float = field(default=3.0)
+    _rrf_poll_interval: float = field(default=DEFAULT_POLL_INTERVAL)
     _last_poll_at: float = field(default=0.0)
 
     def __attrs_post_init__(self) -> None:
         """Post init."""
-        self.api.callbacks[503] = self._http_503_callback
+        self.api.callbacks[self.HTTP_SERVICE_UNAVAILABLE] = self._http_503_callback
         self.events.on(DuetModelEvents.objectmodel, self._track_state)
 
     @property
@@ -154,24 +178,57 @@ class DuetPrinter():
             self.events.emit(DuetModelEvents.state, old_state)
 
     async def connect(self) -> None:
-        """Connect the printer."""
-        result = await self.api.connect()
-        if 'isEmulated' in result:
-            self.sbc = True
-            # Switch to DSF API, reusing connection parameters
-            dsf_api = DuetSoftwareFramework(
-                address=self.api.address,
-                password=self.api.password,
-                session=self.api.session,
-                logger=self.api.logger,
-            )
-            self.api.session = None  # Prevent session close
-            self.api = dsf_api
-            await self.api.connect()  # Establish DSF session key for WebSocket auth
-            self.api.callbacks[503] = self._http_503_callback
+        """Connect the printer.
+
+        Connection priority:
+        1. DCS Unix socket (direct, when running on same SBC)
+        2. DSF HTTP API (SBC mode via network, detected by isEmulated)
+        3. RepRapFirmware HTTP API (standalone mode)
+        """
+        if await self._try_socket_connection():
+            self.logger.info("Connected via DCS Unix socket")
+        else:
+            result = await self.api.connect()
+            if 'isEmulated' in result:
+                self.sbc = True
+                # Switch to DSF HTTP API, reusing connection parameters
+                dsf_api = DuetSoftwareFramework(
+                    address=self.api.address,
+                    password=self.api.password,
+                    session=self.api.session,
+                    logger=self.api.logger,
+                )
+                self.api.session = None  # Prevent session close
+                self.api = dsf_api
+                await self.api.connect()
+                self.api.callbacks[self.HTTP_SERVICE_UNAVAILABLE] = self._http_503_callback
         result = await self._fetch_full_status()
         self.om = result['result'] if 'result' in result else result
         self.events.emit(DuetModelEvents.connect)
+
+    async def _try_socket_connection(self) -> bool:
+        """Attempt to connect via the DCS Unix socket.
+
+        :return: True if socket connection succeeded
+        """
+        if not os.path.exists(self.socket_path):
+            return False
+
+        self.logger.info(f"DCS socket found at {self.socket_path}, attempting direct connection")
+        try:
+            socket_api = DuetControlSocket(
+                address='file://' + self.socket_path,
+                socket_path=self.socket_path,
+                logger=self.api.logger,
+            )
+            await socket_api.connect()
+            await self.api.close()
+            self.api = socket_api
+            self.sbc = True
+            return True
+        except OSError as e:
+            self.logger.warning(f"DCS socket connection failed: {e}, falling back to HTTP")
+            return False
 
     async def close(self) -> None:
         """Close the printer."""
@@ -183,6 +240,8 @@ class DuetPrinter():
 
     def connected(self) -> bool:
         """Check if the printer is connected."""
+        if isinstance(self.api, DuetControlSocket):
+            return self.api._cmd_writer is not None
         if self.api.session is None or self.api.session.closed:
             return False
         return True
@@ -214,7 +273,7 @@ class DuetPrinter():
 
         self.logger.debug('Mesh data: {!s}'.format(heightmap))
 
-        mesh_data_csv = csv.reader(heightmap.splitlines()[3:], dialect='unix')
+        mesh_data_csv = csv.reader(heightmap.splitlines()[self.HEIGHTMAP_CSV_HEADER_LINES:], dialect='unix')
 
         mesh_data = []
         z_min, z_max = float('inf'), float('-inf')
@@ -226,7 +285,8 @@ class DuetPrinter():
             mesh_data.append(x_line)
 
         return {
-            'type': 'rectangular' if compensation['liveGrid']['radius'] == -1 else 'circular',
+            'type':
+            'rectangular' if compensation['liveGrid']['radius'] == self.RECTANGULAR_GRID_RADIUS else 'circular',
             'x_min': compensation['liveGrid']['mins'][0],
             'x_max': compensation['liveGrid']['maxs'][0],
             'y_min': compensation['liveGrid']['mins'][1],
@@ -244,7 +304,7 @@ class DuetPrinter():
     async def download(
         self,
         filepath: str,
-        chunk_size: int = 1024,
+        chunk_size: int = DEFAULT_DOWNLOAD_CHUNK_SIZE,
     ) -> AsyncIterable:
         """Download a file from the printer."""
         async for chunk in self.api.download(filepath=filepath, chunk_size=chunk_size):
@@ -313,12 +373,12 @@ class DuetPrinter():
             **kwargs,
         )
 
-        if isinstance(response['result'], dict) and not (depth == 1 and key == "global"):
+        if isinstance(response['result'], dict) and not (depth == self.OM_DEPTH_SHALLOW and key == "global"):
             for k, v in response['result'].items():
                 if not isinstance(v, (list, dict)):
                     continue
                 sub_key = f"{key}.{k}" if key else k
-                sub_depth = depth + 1 if isinstance(v, dict) and depth < 2 else 99
+                sub_depth = (depth + 1 if isinstance(v, dict) and depth < self.OM_DEPTH_MEDIUM else self.OM_DEPTH_FULL)
                 sub_response = await self._fetch_objectmodel_recursive(
                     *args,
                     key=sub_key,
@@ -349,7 +409,7 @@ class DuetPrinter():
         try:
             response = await self._fetch_objectmodel_recursive(
                 key='',
-                depth=1,
+                depth=self.OM_DEPTH_SHALLOW,
                 frequently=False,
                 include_null=True,
                 verbose=True,
@@ -375,7 +435,7 @@ class DuetPrinter():
         for key in changes:
             changed_obj = await self._fetch_objectmodel_recursive(
                 key=key,
-                depth=2,
+                depth=self.OM_DEPTH_MEDIUM,
                 frequently=False,
                 include_null=True,
                 verbose=False,
@@ -427,7 +487,7 @@ class DuetPrinter():
         else:
             response = await self.api.rr_model(
                 key='',
-                depth=99,
+                depth=self.OM_DEPTH_FULL,
                 frequently=True,
                 include_null=True,
                 verbose=False,
@@ -460,7 +520,7 @@ class DuetPrinter():
 
     async def _http_503_callback(self, error: aiohttp.ClientResponseError):
         """503 callback."""
-        await asyncio.sleep(5)
+        await asyncio.sleep(self.HTTP_ERROR_RETRY_DELAY)
 
     def _schedule_ws_retry(self) -> None:
         """Schedule WebSocket reconnection with exponential backoff."""

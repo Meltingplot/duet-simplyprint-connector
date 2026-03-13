@@ -14,7 +14,19 @@ from yarl import URL
 
 JPEG_SOI = b'\xff\xd8'
 JPEG_EOI = b'\xff\xd9'
+JPEG_MARKER_LENGTH = 2  # Length of JPEG SOI/EOI markers
 MAX_BUFFER_SIZE = 5 * 1024 * 1024  # 5 MB
+
+# HTTP request timeouts (seconds)
+HTTP_CONNECT_TIMEOUT = 30
+HTTP_READ_TIMEOUT = 60
+
+# Frame rate control
+FRAME_INTERVAL = 1 / 4  # 4 FPS
+
+# Stream parsing
+MULTIPART_CHUNK_SIZE = 65536
+HEADER_TERMINATOR_LENGTH = 4  # Length of \r\n\r\n
 
 
 class HttpCameraProtocol(BaseCameraProtocol):
@@ -45,7 +57,7 @@ class HttpCameraProtocol(BaseCameraProtocol):
                 response = session.get(
                     str(self.uri),
                     stream=True,
-                    timeout=(30, 60),
+                    timeout=(HTTP_CONNECT_TIMEOUT, HTTP_READ_TIMEOUT),
                 )
                 response.raise_for_status()
 
@@ -55,7 +67,7 @@ class HttpCameraProtocol(BaseCameraProtocol):
                     yield from self._read_multipart(response)
                 else:
                     yield response.content
-                    time.sleep(1 / 4)
+                    time.sleep(FRAME_INTERVAL)
             except requests.ConnectionError as e:
                 raise CameraProtocolConnectionError(str(e)) from e
             except requests.RequestException as e:
@@ -85,7 +97,7 @@ class HttpCameraProtocol(BaseCameraProtocol):
         buffer = bytearray()
         header_seen = False
 
-        for chunk in response.iter_content(chunk_size=65536):
+        for chunk in response.iter_content(chunk_size=MULTIPART_CHUNK_SIZE):
             if not chunk:
                 continue
             buffer.extend(chunk)
@@ -100,7 +112,7 @@ class HttpCameraProtocol(BaseCameraProtocol):
                     header_end = buffer.find(b'\r\n\r\n')
                     if header_end == -1:
                         break
-                    del buffer[:header_end + 4]
+                    del buffer[:header_end + HEADER_TERMINATOR_LENGTH]
                     header_seen = True
 
                 boundary_pos = buffer.find(boundary_bytes)
@@ -113,13 +125,13 @@ class HttpCameraProtocol(BaseCameraProtocol):
 
                 if frame_data:
                     yield frame_data
-                    time.sleep(1 / 4)
+                    time.sleep(FRAME_INTERVAL)
 
     def _parse_jpeg_markers(self, response: requests.Response) -> Iterator[FrameT]:
         """Parse stream by scanning for JPEG SOI/EOI markers."""
         buffer = bytearray()
 
-        for chunk in response.iter_content(chunk_size=65536):
+        for chunk in response.iter_content(chunk_size=MULTIPART_CHUNK_SIZE):
             if not chunk:
                 continue
             buffer.extend(chunk)
@@ -139,15 +151,15 @@ class HttpCameraProtocol(BaseCameraProtocol):
                     del buffer[:soi_pos]
                     soi_pos = 0
 
-                eoi_pos = buffer.find(JPEG_EOI, 2)
+                eoi_pos = buffer.find(JPEG_EOI, JPEG_MARKER_LENGTH)
                 if eoi_pos == -1:
                     break
 
-                frame_data = bytes(buffer[:eoi_pos + 2])
-                del buffer[:eoi_pos + 2]
+                frame_data = bytes(buffer[:eoi_pos + JPEG_MARKER_LENGTH])
+                del buffer[:eoi_pos + JPEG_MARKER_LENGTH]
 
                 yield frame_data
-                time.sleep(1 / 4)
+                time.sleep(FRAME_INTERVAL)
 
     @staticmethod
     def _extract_boundary(content_type: str) -> str:
