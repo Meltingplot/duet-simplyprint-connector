@@ -52,11 +52,17 @@ class RepRapFirmware(DuetAPIBase):
         await asyncio.sleep(self.HTTP_ERROR_RETRY_DELAY)
 
     async def _default_http_503_busy_callback(self, e):
-        # Besides, RepRapFirmware may run short on memory and
-        # may not be able to respond properly. In this case,
-        # HTTP status code 503 is returned.
+        # RepRapFirmware may run short on output buffers when a large
+        # gcode reply (e.g. M122) is pending, preventing it from
+        # assembling rr_model responses. Drain the reply buffer first.
         self.logger.error(f'Duet busy {e.request_info!s} - retry')
         self.logger.debug(f"Received HTTP 503 for {e.request_info!s}")
+        try:
+            reply = await self.rr_reply(nocache=True)
+            if reply:
+                self.logger.debug(f"Drained pending reply: {reply[:200]}")
+        except Exception as drain_err:
+            self.logger.debug(f"Failed to drain reply buffer: {drain_err}")
         await asyncio.sleep(self.HTTP_ERROR_RETRY_DELAY)
 
     async def reconnect(self) -> dict:

@@ -349,3 +349,21 @@ async def test_send_gcode_no_reply(dsf, mock_session):
         data='G28',
         params={'async': 'true'},
     )
+
+
+@pytest.mark.asyncio
+async def test_http_503_callback_does_not_drain_reply(dsf):
+    """Verify DSF 503 callback just sleeps without draining reply buffer."""
+    error = aiohttp.ClientResponseError(
+        request_info=MagicMock(),
+        history=(),
+        status=503,
+        message='Service Unavailable',
+    )
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr('asyncio.sleep', AsyncMock())
+        await dsf._default_http_503_unavailable_callback(error)
+
+    # DSF has no rr_reply — verify no unexpected calls were made
+    assert not hasattr(dsf, 'rr_reply')

@@ -256,3 +256,22 @@ async def test_reconnect_raises_on_auth_failure(mock_session):
     rrf = RepRapFirmware(session=mock_session)
     with pytest.raises(aiohttp.ClientResponseError, match='Authentication failed'):
         await rrf.reconnect()
+
+
+@pytest.mark.asyncio
+async def test_http_503_drains_reply_buffer(reprapfirmware):
+    """Verify RRF 503 callback calls rr_reply to drain output buffers."""
+    error = aiohttp.ClientResponseError(
+        request_info=MagicMock(),
+        history=(),
+        status=503,
+        message='Service Unavailable',
+    )
+
+    reprapfirmware.rr_reply = AsyncMock(return_value='M122 diagnostic output')
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr('asyncio.sleep', AsyncMock())
+        await reprapfirmware._default_http_503_busy_callback(error)
+
+    reprapfirmware.rr_reply.assert_awaited_once_with(nocache=True)

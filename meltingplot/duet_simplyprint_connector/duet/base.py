@@ -49,6 +49,7 @@ def reauthenticate(retries: int = 3, auth_error_status: list[int] = None):
                     self.logger.error(f"{e} - retry")
                 except aiohttp.ClientResponseError as e:
                     remaining -= 1
+                    self.logger.debug(f"Response error ({e.status}) while requesting {e.request_info!s}")
                     remaining = await self._handle_response_error(
                         e,
                         remaining,

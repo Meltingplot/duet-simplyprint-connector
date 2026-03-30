@@ -10,7 +10,6 @@ from copy import deepcopy
 from enum import auto
 from typing import AsyncIterable, BinaryIO, Callable, Optional
 
-import aiohttp
 from attr import define, field
 from pyee.asyncio import AsyncIOEventEmitter
 from strenum import CamelCaseStrEnum, StrEnum
@@ -115,9 +114,6 @@ class DuetPrinter():
     # Backoff schedule in seconds: 1 min, 5 min, 30 min (capped)
     WS_RETRY_DELAYS = [60, 300, 1800]
 
-    # HTTP status codes
-    HTTP_SERVICE_UNAVAILABLE = 503
-
     # Error retry delay (seconds)
     HTTP_ERROR_RETRY_DELAY = 5
 
@@ -154,7 +150,6 @@ class DuetPrinter():
 
     def __attrs_post_init__(self) -> None:
         """Post init."""
-        self.api.callbacks[self.HTTP_SERVICE_UNAVAILABLE] = self._http_503_callback
         self.events.on(DuetModelEvents.objectmodel, self._track_state)
 
     @property
@@ -201,7 +196,6 @@ class DuetPrinter():
                 self.api.session = None  # Prevent session close
                 self.api = dsf_api
                 await self.api.connect()
-                self.api.callbacks[self.HTTP_SERVICE_UNAVAILABLE] = self._http_503_callback
         result = await self._fetch_full_status()
         self.om = result['result'] if 'result' in result else result
         self.events.emit(DuetModelEvents.connect)
@@ -517,10 +511,6 @@ class DuetPrinter():
                 changes[key] = value
         self.seqs = new_seqs
         return changes
-
-    async def _http_503_callback(self, error: aiohttp.ClientResponseError):
-        """503 callback."""
-        await asyncio.sleep(self.HTTP_ERROR_RETRY_DELAY)
 
     def _schedule_ws_retry(self) -> None:
         """Schedule WebSocket reconnection with exponential backoff."""

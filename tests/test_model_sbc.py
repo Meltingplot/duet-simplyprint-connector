@@ -278,20 +278,6 @@ async def test_handle_om_changes_sbc_no_rr_reply(mock_dsf_session):
     assert duet_printer._reply == 'test reply'
 
 
-@pytest.mark.asyncio
-async def test_http_503_callback_sbc_sleeps():
-    """Verify SBC mode just sleeps on 503 errors."""
-    dsf_api = DuetSoftwareFramework()
-    duet_printer = DuetPrinter(api=dsf_api, sbc=True)
-
-    # This should not raise and should just sleep
-    error = aiohttp.ClientResponseError(MagicMock(), (), status=503, message='Service Unavailable')
-
-    # Should complete without error (just sleeps)
-    with patch('asyncio.sleep', new_callable=AsyncMock) as mock_sleep:
-        await duet_printer._http_503_callback(error)
-        mock_sleep.assert_called_once_with(5)
-
 
 @pytest.mark.asyncio
 async def test_connect_preserves_session():
