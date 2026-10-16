@@ -11,7 +11,7 @@ import pytest
 from .context import FileProgressStateEnum, VirtualClient, VirtualConfig
 from simplyprint_ws_client.core.ws_protocol.messages import FileDemandData, SkipObjectsDemandData
 from simplyprint_ws_client.core.state import PrinterStatus
-from meltingplot.duet_simplyprint_connector.duet.model import merge_dictionary
+from meltingplot.duet_simplyprint_connector.duet.model import DuetState, merge_dictionary
 
 @pytest.fixture
 def virtual_client():
@@ -491,10 +491,41 @@ async def test_on_resume(virtual_client):
 async def test_on_cancel(virtual_client):
     """Test on_cancel sends M25 then M0."""
     virtual_client.duet = AsyncMock()
+    virtual_client.duet.state = DuetState.paused
+    virtual_client._background_task = set()
+    virtual_client.event_loop = asyncio.get_running_loop()
     await virtual_client.on_cancel(None)
+    await asyncio.gather(*virtual_client._background_task)
     assert virtual_client.duet.gcode.call_count == 2
     calls = [c[0][0] for c in virtual_client.duet.gcode.call_args_list]
     assert calls == ['M25', 'M0']
+
+
+@pytest.mark.asyncio
+async def test_on_cancel_waits_for_pause_before_m0(virtual_client):
+    """M0 only cancels a paused job, so it must not be sent while the job is still pausing."""
+    virtual_client.duet = AsyncMock()
+    virtual_client.duet.state = DuetState.processing
+    virtual_client._background_task = set()
+    virtual_client.event_loop = asyncio.get_running_loop()
+    virtual_client.CANCEL_PAUSE_POLL_INTERVAL = 0
+    sent = []
+
+    async def gcode(code):
+        sent.append((code, virtual_client.duet.state))
+        if code == 'M25':
+            virtual_client.duet.state = DuetState.pausing
+
+    virtual_client.duet.gcode = gcode
+    assert await virtual_client.on_cancel(None) is None
+    task, = virtual_client._background_task
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert sent == [('M25', DuetState.processing)]
+
+    virtual_client.duet.state = DuetState.paused
+    await task
+    assert sent == [('M25', DuetState.processing), ('M0', DuetState.paused)]
 
 
 @pytest.mark.asyncio
@@ -926,6 +957,18 @@ async def test_update_skipped_objects_partial_om(virtual_client):
     await virtual_client._update_skipped_objects(job_status)
 
     assert virtual_client.printer.job_info.skipped_objects == [0]
+
+
+@pytest.mark.asyncio
+async def test_send_build_objects_without_known_bounds(virtual_client):
+    """RRF reports [null, null] bounds at print start; send the object without a bbox."""
+    virtual_client.send = AsyncMock()
+
+    await virtual_client._send_build_objects([{'name': 'object_0', 'x': [None, None], 'y': [None, None]}])
+
+    entries = virtual_client.send.call_args.args[0].data['objects']
+    assert len(entries) == 1
+    assert entries[0].bbox is None
 
 
 @pytest.mark.asyncio
