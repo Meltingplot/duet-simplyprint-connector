@@ -1120,3 +1120,39 @@ async def test_connect_event_resets_printer_timeout(virtual_client):
     await virtual_client._duet_on_connect()
 
     assert virtual_client._printer_timeout > time.time()
+
+@pytest.mark.asyncio
+async def test_on_connected_reconnect_does_not_start_second_duet_poller(virtual_client):
+    """A SimplyPrint websocket reconnect must not add another Duet polling loop."""
+    virtual_client._background_task = set()
+    virtual_client.event_loop = asyncio.get_running_loop()
+    virtual_client.use_running_loop = Mock()
+    virtual_client._printer_timeout = time.time() + 300
+    ticks = 0
+
+    async def tick():
+        nonlocal ticks
+        ticks += 1
+        await asyncio.sleep(0)
+
+    virtual_client._ensure_duet_connection = AsyncMock()
+    virtual_client.duet = Mock()
+    virtual_client.duet.tick = tick
+    virtual_client.duet.close = AsyncMock()
+    virtual_client._update_cpu_and_memory_info = AsyncMock()
+    virtual_client._update_network_info = Mock()
+
+    for _ in range(5):
+        await virtual_client.on_connected(None)
+
+    assert len(virtual_client._background_task) == 2
+
+    stopped = list(virtual_client._background_task)
+    await virtual_client.on_remove_connection(None)
+    await asyncio.gather(*stopped, return_exceptions=True)
+    await virtual_client.on_connected(None)
+
+    assert len(virtual_client._background_task) == 2
+
+    await virtual_client.on_remove_connection(None)
+    await asyncio.gather(*virtual_client._background_task, return_exceptions=True)
