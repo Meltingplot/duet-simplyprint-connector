@@ -1,6 +1,20 @@
 """Installscript of the Duet Simplyprint Connector."""
 import click
 
+#: Group that owns the DSF SD directory (/opt/dsf/sd) on SBC setups.
+DSF_GROUP = "dsf"
+
+
+def _dsf_group_exists() -> bool:
+    """Return True if DSF is installed, i.e. its group exists."""
+    import grp
+
+    try:
+        grp.getgrnam(DSF_GROUP)
+    except KeyError:
+        return False
+    return True
+
 
 @click.command()
 def install_as_service():
@@ -28,6 +42,18 @@ def install_as_service():
     service_content = service_content.replace('Group=ubuntu', f'Group={current_group}', 1)
 
     click.echo(f"Installing the service as user/group: {current_user}/{current_group}")
+
+    # In SBC mode the connector writes uploads straight into DSF's SD
+    # directory, which is dsf:dsf 0775. Give the service the dsf group, and
+    # add the user to it so manual CLI runs get the same access.
+    if _dsf_group_exists():
+        service_content = service_content.replace(
+            f"Group={current_group}\n",
+            f"Group={current_group}\nSupplementaryGroups={DSF_GROUP}\n",
+            1,
+        )
+        click.echo(f"DSF detected, adding {current_user} to the {DSF_GROUP} group")
+        subprocess.check_output(["sudo", "usermod", "-aG", DSF_GROUP, current_user])
 
     # Save the modified content to a temp file
     with tempfile.NamedTemporaryFile('wt+') as tmp_file:
