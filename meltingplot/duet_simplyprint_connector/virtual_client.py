@@ -45,7 +45,7 @@ from yarl import URL
 
 from . import __version__
 from .duet.api import RepRapFirmware
-from .duet.model import DuetPrinter
+from .duet.model import DuetPrinter, DuetState
 from .gcode import GCodeBlock
 from .network import get_local_ip_and_mac
 from .state import map_duet_state_to_printer_status
@@ -101,6 +101,8 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
 
     # File handling
     AUTO_START_TIMEOUT = 400  # seconds
+    CANCEL_PAUSE_TIMEOUT = 120  # seconds
+    CANCEL_PAUSE_POLL_INTERVAL = 0.5  # seconds
     FILE_INFO_TIMEOUT = 10  # seconds
     FILE_PROGRESS_UPDATE_INTERVAL = 5  # seconds
     UPLOAD_MAX_RETRIES = 3
@@ -124,6 +126,8 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
 
     _last_messagebox_seq: int = -1
     _last_build_objects: list = None
+    _duet_task: Optional[asyncio.Task] = None
+    _status_task: Optional[asyncio.Task] = None
 
     def __init__(self, *args, **kwargs) -> None:
         """Initialize the client."""
@@ -317,8 +321,13 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
         self.use_running_loop()
         self._is_stopped = False
 
-        await self._duet_printer_task()
-        await self._connector_status_task()
+        # on_connected fires on every SimplyPrint websocket reconnect, while
+        # on_remove_connection only fires when the printer is removed. Start
+        # each loop once, otherwise every reconnect adds another Duet poller.
+        if self._duet_task is None or self._duet_task.done():
+            self._duet_task = await self._duet_printer_task()
+        if self._status_task is None or self._status_task.done():
+            self._status_task = await self._connector_status_task()
 
     async def on_remove_connection(self, _) -> None:
         """Remove the connection."""
@@ -326,6 +335,8 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
         self._is_stopped = True
         for task in self._background_task:
             task.cancel()
+        self._duet_task = None
+        self._status_task = None
 
     async def on_printer_settings(
         self,
@@ -607,7 +618,20 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
 
     async def on_cancel(self, _) -> None:
         """Cancel the print job."""
+        await self._cancel_print()
+
+    @async_task
+    async def _cancel_print(self) -> None:
+        """Pause, wait until paused, then cancel.
+
+        RRF only cancels a print with M0 once it is paused. Over the DCS socket
+        codes are submitted asynchronously, so M0 sent right after M25 runs
+        while the job is still pausing and is ignored; wait for the pause.
+        """
         await self.duet.gcode('M25')
+        deadline = time.monotonic() + self.CANCEL_PAUSE_TIMEOUT
+        while self.duet.state in (DuetState.processing, DuetState.pausing) and time.monotonic() < deadline:
+            await asyncio.sleep(self.CANCEL_PAUSE_POLL_INTERVAL)
         await self.duet.gcode('M0')
 
     async def on_skip_objects(self, data: SkipObjectsDemandData) -> None:
@@ -653,7 +677,8 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
 
             x_bounds = obj.get('x')
             y_bounds = obj.get('y')
-            if x_bounds and y_bounds:
+            # RRF reports [null, null] until the object's bounds are known.
+            if x_bounds and y_bounds and None not in x_bounds and None not in y_bounds:
                 entry.bbox = [x_bounds[0], y_bounds[0], x_bounds[1], y_bounds[1]]
                 entry.center = [
                     (x_bounds[0] + x_bounds[1]) / 2.0,
@@ -867,10 +892,15 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
             'mac': self.printer.info.mac,
         }
         cookie_json = json.dumps(cookie_data).encode('utf-8')
-        await self.duet.upload_stream(
-            filepath='0:/sys/simplyprint-connector.json',
-            file=io.BytesIO(cookie_json),
-        )
+        # The cookie only helps autodiscovery; failing to write it must not
+        # abort the rest of the connect handler (firmware/version info).
+        try:
+            await self.duet.upload_stream(
+                filepath='0:/sys/simplyprint-connector.json',
+                file=io.BytesIO(cookie_json),
+            )
+        except (IOError, asyncio.TimeoutError, aiohttp.ClientError) as e:
+            self.logger.warning(f"Failed to write connector cookie: {e}")
 
     @async_task
     async def _mesh_compensation_status(self, old_om) -> None:
