@@ -1121,6 +1121,23 @@ async def test_connect_event_resets_printer_timeout(virtual_client):
 
     assert virtual_client._printer_timeout > time.time()
 
+
+@pytest.mark.asyncio
+async def test_connect_cookie_write_failure_still_reports_firmware_info(virtual_client):
+    """A failed cookie write must not skip firmware and connector version reporting."""
+    virtual_client.duet = Mock()
+    virtual_client.duet.om = {
+        'boards': [{'uniqueId': 'unique_id', 'firmwareName': 'RRF', 'firmwareVersion': '3.6.3'}],
+        'network': {'name': 'test-printer'},
+    }
+    virtual_client.duet.upload_stream = AsyncMock(side_effect=IOError("Upload failed: [Errno 13] Permission denied"))
+
+    with patch.object(virtual_client, '_set_firmware_info') as set_firmware_info:
+        await virtual_client._duet_on_connect()
+
+    set_firmware_info.assert_called_once()
+
+
 @pytest.mark.asyncio
 async def test_on_connected_reconnect_does_not_start_second_duet_poller(virtual_client):
     """A SimplyPrint websocket reconnect must not add another Duet polling loop."""

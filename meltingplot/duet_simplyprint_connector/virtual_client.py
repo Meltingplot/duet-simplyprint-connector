@@ -876,10 +876,15 @@ class VirtualClient(DefaultClient[VirtualConfig], ClientCameraMixin[VirtualConfi
             'mac': self.printer.info.mac,
         }
         cookie_json = json.dumps(cookie_data).encode('utf-8')
-        await self.duet.upload_stream(
-            filepath='0:/sys/simplyprint-connector.json',
-            file=io.BytesIO(cookie_json),
-        )
+        # The cookie only helps autodiscovery; failing to write it must not
+        # abort the rest of the connect handler (firmware/version info).
+        try:
+            await self.duet.upload_stream(
+                filepath='0:/sys/simplyprint-connector.json',
+                file=io.BytesIO(cookie_json),
+            )
+        except (IOError, asyncio.TimeoutError, aiohttp.ClientError) as e:
+            self.logger.warning(f"Failed to write connector cookie: {e}")
 
     @async_task
     async def _mesh_compensation_status(self, old_om) -> None:

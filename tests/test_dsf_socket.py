@@ -504,6 +504,37 @@ class TestDuetControlSocketFileIO:
         assert progress_values[-1] == 100.0
 
     @pytest.mark.asyncio
+    async def test_upload_stream_replaces_file_it_cannot_write(self, socket_api, tmp_path):
+        """A file DSF wrote (not writable by the connector) is replaced, not opened for writing."""
+        gcodes_dir = tmp_path / 'gcodes'
+        gcodes_dir.mkdir()
+        target = gcodes_dir / 'test.gcode'
+        target.write_bytes(b'old')
+        target.chmod(0o444)
+
+        await socket_api.upload_stream('0:/gcodes/test.gcode', io.BytesIO(b'new'))
+
+        assert target.read_bytes() == b'new'
+        assert target.stat().st_mode & 0o777 == 0o664
+        assert target.stat().st_gid == gcodes_dir.stat().st_gid
+        assert sorted(p.name for p in gcodes_dir.iterdir()) == ['test.gcode']
+
+    @pytest.mark.asyncio
+    async def test_upload_stream_failure_leaves_no_temp_file(self, socket_api, tmp_path):
+        gcodes_dir = tmp_path / 'gcodes'
+        gcodes_dir.mkdir()
+
+        class BrokenFile(io.BytesIO):
+
+            def read(self, *args):
+                raise OSError('read failed')
+
+        with pytest.raises(IOError):
+            await socket_api.upload_stream('0:/gcodes/test.gcode', BrokenFile(b'x'))
+
+        assert list(gcodes_dir.iterdir()) == []
+
+    @pytest.mark.asyncio
     async def test_download(self, socket_api, tmp_path):
         content = b'G28\nG1 X10\n'
         gcodes_dir = tmp_path / 'gcodes'
