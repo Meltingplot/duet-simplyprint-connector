@@ -662,7 +662,10 @@ class TestDuetControlSocketFileIO:
         assert (gcodes_dir / 'new.gcode').read_bytes() == b'old'
 
     @pytest.mark.asyncio
-    async def test_fileinfo(self, socket_api, mock_reader, mock_writer):
+    async def test_fileinfo(self, socket_api, mock_reader, mock_writer, tmp_path):
+        gcodes_dir = tmp_path / 'gcodes'
+        gcodes_dir.mkdir()
+        (gcodes_dir / 'test.gcode').write_bytes(b'G28\n')
         file_info = {
             'fileName': '0:/gcodes/test.gcode',
             'size': 1234,
@@ -683,9 +686,23 @@ class TestDuetControlSocketFileIO:
             result = await socket_api.fileinfo('0:/gcodes/test.gcode')
 
         assert result == file_info
+        sent = json.loads(mock_writer.write.call_args_list[-1].args[0])
+        assert sent == {'command': 'GetFileInfo', 'fileName': str(gcodes_dir / 'test.gcode')}
 
     @pytest.mark.asyncio
-    async def test_fileinfo_not_found(self, socket_api, mock_reader, mock_writer):
+    async def test_fileinfo_missing_file_raises_without_asking_dcs(self, socket_api, mock_writer, tmp_path):
+        (tmp_path / 'gcodes').mkdir()
+
+        with pytest.raises(FileNotFoundError):
+            await socket_api.fileinfo('0:/gcodes/missing.gcode')
+
+        mock_writer.write.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_fileinfo_not_found(self, socket_api, mock_reader, mock_writer, tmp_path):
+        gcodes_dir = tmp_path / 'gcodes'
+        gcodes_dir.mkdir()
+        (gcodes_dir / 'nonexistent.gcode').write_bytes(b'')
         mock_reader.read = AsyncMock(
             side_effect=[
                 _make_server_init(),

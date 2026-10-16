@@ -498,9 +498,14 @@ class DuetControlSocket(DuetAPIBase):
         :param filepath: Virtual path to file
         :return: File information dict
         """
+        # DCS resolves GetFileInfo's fileName as a filesystem path, not an RRF
+        # virtual path ("0:/gcodes/x" becomes "/0:/gcodes/x" and fails).
+        real_path = _resolve_dsf_path(filepath, self.sd_base_dir)
+        if not os.path.isfile(real_path):
+            raise FileNotFoundError(f"File not found: {filepath}")
         cmd = {
             'command': 'GetFileInfo',
-            'fileName': filepath,
+            'fileName': real_path,
         }
         response = await self._send_command(cmd)
         result = response.get('result', {})
