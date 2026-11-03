@@ -56,6 +56,9 @@ Open an SSH session to your Simplyprint-connected device, such as a Raspberry Pi
 
     source <(curl -sSL https://raw.githubusercontent.com/Meltingplot/duet-simplyprint-connector/refs/heads/main/install.sh)
 
+The install script supports Debian Bookworm or newer (including Raspberry Pi OS) and Ubuntu 24.04 or newer.
+Python 3.11 or higher is required.
+
 
 -----------------------------
 Content of DuetConnector.json
@@ -91,3 +94,24 @@ Usage of Meltingplot Duet Simplyprint Connector
 - *Optional* Edit the configuration file `~/.config/SimplyPrint/DuetConnector.json`
 - Start the duet simplyprint connector with `simplyprint start` or `systemctl start simplyprint-connector.service`
 - Add the printer via the Simplyprint.io web interface.
+
+
+--------------------
+Managing the service
+--------------------
+
+The install script sets up the connector as the systemd service ``simplyprint-connector``.
+Restart it, for example after editing ``DuetConnector.json``:
+
+.. code-block:: sh
+
+    sudo systemctl restart simplyprint-connector
+
+Check whether the service is running and follow its log:
+
+.. code-block:: sh
+
+    sudo systemctl status simplyprint-connector
+    sudo journalctl -u simplyprint-connector -f
+
+Stop or start it with ``sudo systemctl stop simplyprint-connector`` and ``sudo systemctl start simplyprint-connector``.
